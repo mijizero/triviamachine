@@ -1,0 +1,143 @@
+gcloud run services logs read trivia-video --region=asia-southeast1 --limit=50
+
+curl -X POST https://trivia-video-471441898916.asia-southeast1.run.app \
+  -H "Content-Type: application/json" \
+  -d '{
+        "question": "What is the capital of Japan?",
+        "choices": "A: Tokyo\nB: Seoul\nC: Beijing\nD: Bangkok",
+        "answer": "Tokyo",
+        "background": "gs://trivia-videos-output/background.jpg",
+        "output": "gs://trivia-videos-output/trivia_japan.mp4"
+      }
+
+# Set project once
+gcloud config set project trivia-machine-472207
+
+# 🔨 Rebuild without cache
+gcloud builds submit --no-cache \
+  --tag asia-southeast1-docker.pkg.dev/trivia-machine-472207/trivia-repo/trivia-video
+
+# 🚀 Deploy with safe runtime settings
+gcloud run deploy trivia-video \
+  --image asia-southeast1-docker.pkg.dev/trivia-machine-472207/trivia-repo/trivia-video \
+  --region asia-southeast1 \
+  --platform managed \
+  --allow-unauthenticated \
+  --concurrency=1 \
+  --timeout=900s \
+  --max-instances=1 \
+  --cpu=2 \
+  --memory=2Gi \
+  --set-env-vars=PORT=8080 \
+  --startup-cpu-boost
+
+
+curl -X POST https://trivia-video-471441898916.asia-southeast1.run.app//generate \
+  -H "Content-Type: application/json" \
+  -d '{"text":"Trivia: The Eiffel Tower can be 15 cm taller in summer!"}'
+  
+
+
+curl -X POST https://trivia-video-471441898916.asia-southeast1.run.app \
+  -H "Content-Type: application/json" \
+  -d '{
+        "question": "What is the capital of Japan?",
+        "choices": "A: Tokyo\nB: Seoul\nC: Beijing\nD: Bangkok",
+        "answer": "Tokyo",
+        "background": "gs://trivia-videos-output/background.jpg",
+        "output": "gs://trivia-videos-output/trivia_japan.mp4"
+      }
+
+
+curl -X POST https://trivia-video-471441898916.asia-southeast1.run.app \
+  -H "Content-Type: application/json" \
+  -d '{
+        "question": "What is the capital of Japan?",
+        "choices": "A: Tokyo\nB: Seoul\nC: Beijing\nD: Bangkok",
+        "answer": "Tokyo",
+        "more_info": "Tokyo was established as the capital in 1868. It is Japan's largest city.",
+        "background": "gs://trivia-videos-output/background.jpg",
+        "output": "gs://trivia-videos-output/trivia_japan.mp4"
+      }'
+
+  gcloud beta logging tail \
+  "resource.type=cloud_run_revision AND resource.labels.service_name=trivia-video" \
+  --project=trivia-machine-472207
+
+
+  gcloud builds submit --no-cache \
+  --tag asia-southeast1-docker.pkg.dev/trivia-machine-472207/trivia-repo/trivia-video
+
+gcloud run deploy trivia-video \
+  --image asia-southeast1-docker.pkg.dev/trivia-machine-472207/trivia-repo/trivia-video \
+  --region asia-southeast1 \
+  --platform managed \
+  --allow-unauthenticated \
+  --concurrency=1 \
+  --timeout=900s \
+  --max-instances=1 \
+  --cpu=2 \
+  --memory=2Gi \
+  --cpu-boost
+
+# Rebuild and push the image
+c
+# Deploy to Cloud Run
+gcloud run deploy trivia-video \
+  --image asia-southeast1-docker.pkg.dev/trivia-machine-472207/trivia-repo/trivia-video \
+  --region asia-southeast1 \
+  --platform managed \
+  --allow-unauthenticated
+
+  curl -X POST "https://trivia-video-x2yw333tua-as.a.run.app" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "What year did Formula 1 start?",
+    "choices": "\nA) 1946\nB) 1950\nC) 1960\nD) 1999\n",
+    "answer": "1950",
+    "background": "gs://trivia-videos-output/background.jpg",
+     "output": "gs://trivia-videos-output/trivia_japan.mp4"
+  }'
+
+curl -X POST "https://trivia-video-x2yw333tua-as.a.run.app" \
+-H "Content-Type: application/json" \
+-d '{
+  "question": "What year did Formula 1 start?",
+  "choices": "A) 1946\nB) 1950\nC) 1960\nD) 1999",
+  "answer": "D) 1950",
+  "background": "gs://trivia-videos-output/background.jpg",
+  "output": "gs://trivia-videos-output/trivia_japan.mp4"
+}'
+
+curl -X POST "https://trivia-video-x2yw333tua-as.a.run.app" \
+-H "Content-Type: application/json" \
+-d '{
+  "question": "What year did Formula 1 start?",
+  "choices": "A) 1946\nB) 1950\nC) 1960\nD) 1950",
+  "answer": "D) 1950",
+  "explanation": "F1 was first established in 1950 as part of the FIA World Championship.\nIt brought together top drivers and manufacturers from Europe and beyond to compete internationally.",
+  "background": "gs://trivia-videos-output/background.jpg",
+  "output": "gs://trivia-videos-output/trivia_japan.mp4"
+}'
+
+
+# Set project once
+gcloud config set project trivia-machine-472207
+
+# Rebuild and push the image
+gcloud builds submit --tag asia-southeast1-docker.pkg.dev/trivia-machine-472207/trivia-repo/trivia-video
+
+# Deploy to Cloud Run
+gcloud run deploy trivia-video \
+  --image asia-southeast1-docker.pkg.dev/trivia-machine-472207/trivia-repo/trivia-video \
+  --region asia-southeast1 \
+  --platform managed \
+  --allow-unauthenticated
+  
+curl -X POST "https://trivia-video-x2yw333tua-as.a.run.app/"/generate \
+  -H "Content-Type: application/json"
+
+gcloud run services logs read trivia-video --region=asia-southeast1 --limit=50
+
+
+  

@@ -1,0 +1,147 @@
+def create_trivia_video(question, choices, answer, explanation, background_gcs_path, output_gcs_path):
+    from moviepy.editor import CompositeAudioClip, ImageClip, AudioFileClip, CompositeVideoClip
+    from PIL import Image, ImageDraw, ImageFont
+    import tempfile, numpy as np, textwrap
+
+    # --- Font size controls (20% increase) ---
+    BASE_FONT_Q = 60  # question font
+    BASE_FONT_A = 45  # answer font
+
+    # --- Download background image from GCS ---
+    bucket_name, blob_name = background_gcs_path.replace("gs://", "").split("/", 1)
+    bucket = gcs_client.bucket(bucket_name)
+    blob = bucket.blob(blob_name)
+    bg_tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+    blob.download_to_filename(bg_tmp.name)
+
+    # --- Prepare overlay text (question + choices) ---
+    choice_lines = [line.strip() for line in choices.strip().splitlines() if line.strip()]
+    formatted_choices_display = "<BREAK>".join(choice_lines)  # use <BREAK> instead of \n
+    overlay_text = f"{question}<BREAK>-<BREAK>{formatted_choices_display}"
+
+    # --- Prepare TTS text with SSML breaks ---
+    choice_lines_ssml = [f"{line}<break time='700ms'/>" for line in choice_lines]
+    formatted_choices_tts = "<break time='100ms'/>".join(choice_lines_ssml)
+    tts_text_question = f"<speak>{question}<break time='500ms'/>{formatted_choices_tts}</speak>"
+
+    # --- TTS for answer + explanation ---
+    explanation_lines = [line.strip() for line in explanation.split("<BREAK>") if line.strip()]
+
+    # Insert extra block break between first and second explanation
+    if len(explanation_lines) > 1:
+        explanation_lines.insert(1, "<BREAK>")
+
+    explanation_ssml = "<break time='800ms'/>".join([line for line in explanation_lines if line])
+    tts_text_answer = (
+        f"<speak>The answer is: {answer}<break time='1000ms'/>"
+        f"{explanation_ssml}</speak>"
+    )
+
+    # --- Generate narration audio ---
+    audio_tmp_question = synthesize_speech(tts_text_question, use_ssml=True)
+    audio_tmp_answer = synthesize_speech(tts_text_answer, use_ssml=True)
+    audio_clip_question = AudioFileClip(audio_tmp_question)
+    audio_clip_answer = AudioFileClip(audio_tmp_answer)
+
+    # --- Prepare background image ---
+    img = Image.open(bg_tmp.name).convert("RGB")
+    portrait_img = resize_to_shorts(img)
+    total_duration = audio_clip_question.duration + 3 + audio_clip_answer.duration
+    img_clip = ImageClip(np.array(portrait_img)).set_duration(total_duration)
+
+    # --- Utility: render centered text with auto-scaling ---
+    def render_text_box(text, max_width, max_height, font_path, max_fontsize, min_fontsize=24, line_spacing=15):
+        max_fontsize = int(max_fontsize * 1.2)
+
+        # Replace <BREAK> with forced line breaks
+        paragraphs = text.split("<BREAK>")
+
+        for fontsize in range(max_fontsize, min_fontsize, -2):
+            font = ImageFont.truetype(font_path, fontsize)
+            lines = []
+            for paragraph in paragraphs:
+                wrapped = []
+                words = paragraph.split()
+                current_line = ""
+                for word in words:
+                    test_line = f"{current_line} {word}".strip()
+                    line_width = font.getbbox(test_line)[2]
+                    if line_width <= max_width - 100:
+                        current_line = test_line
+                    else:
+                        if current_line:
+                            wrapped.append(current_line)
+                        current_line = word
+                if current_line:
+                    wrapped.append(current_line)
+                lines.extend(wrapped if wrapped else [""])
+            # Calculate total height
+            dummy_img = Image.new("RGBA", (max_width, max_height), (0,0,0,0))
+            draw = ImageDraw.Draw(dummy_img)
+            total_height = sum(draw.textbbox((0,0), line, font=font)[3] for line in lines) + (len(lines)-1)*line_spacing
+            if total_height <= max_height - 50:
+                break
+
+        img = Image.new("RGBA", (max_width, max_height), (0,0,0,0))
+        draw = ImageDraw.Draw(img)
+        y = (max_height - total_height)//2
+        for line in lines:
+            bbox = draw.textbbox((0,0), line, font=font)
+            w, h = bbox[2]-bbox[0], bbox[3]-bbox[1]
+            x = (max_width - w)//2
+            border = max(2, fontsize//20)
+            for dx in [-border,0,border]:
+                for dy in [-border,0,border]:
+                    if dx != 0 or dy != 0:
+                        draw.text((x+dx, y+dy), line, font=font, fill="black")
+            draw.text((x, y), line, font=font, fill=(204,204,0))
+            y += h + line_spacing
+        return img
+
+    font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+
+    # --- Question + choices text ---
+    text_img_q = render_text_box(overlay_text, SHORTS_WIDTH, SHORTS_HEIGHT, font_path, max_fontsize=BASE_FONT_Q)
+    text_clip_question = ImageClip(np.array(text_img_q)).set_duration(audio_clip_question.duration + 3)
+
+    # --- Countdown overlay ---
+    countdown_clips = []
+    for i, sec in enumerate(["3","2","1"]):
+        countdown_img = Image.new("RGBA", (SHORTS_WIDTH, SHORTS_HEIGHT), (0,0,0,0))
+        draw_count = ImageDraw.Draw(countdown_img)
+        font_count = ImageFont.truetype(font_path, 350)
+        bbox = draw_count.textbbox((0,0), sec, font=font_count)
+        w, h = bbox[2]-bbox[0], bbox[3]-bbox[1]
+        x, y = (SHORTS_WIDTH - w)//2, (SHORTS_HEIGHT - h)//2
+        border = 8
+        for dx in [-border,0,border]:
+            for dy in [-border,0,border]:
+                if dx != 0 or dy != 0:
+                    draw_count.text((x+dx, y+dy), sec, font=font_count, fill=(255,0,0,180))
+        draw_count.text((x, y), sec, font=font_count, fill=(204,204,0,112))
+        countdown_clips.append(
+            ImageClip(np.array(countdown_img)).set_start(audio_clip_question.duration + i).set_duration(1)
+        )
+
+    # --- Answer + explanation text ---
+    answer_text = f"The answer is:<BREAK>{answer}<BREAK><BREAK>" + "<BREAK>".join(explanation_lines)
+    text_img_a = render_text_box(answer_text, SHORTS_WIDTH, SHORTS_HEIGHT, font_path, max_fontsize=BASE_FONT_A)
+    text_clip_answer = ImageClip(np.array(text_img_a)).set_start(audio_clip_question.duration + 3).set_duration(audio_clip_answer.duration)
+
+    # --- Compose final video ---
+    final_clip = CompositeVideoClip([img_clip, text_clip_question, text_clip_answer, *countdown_clips], size=(SHORTS_WIDTH, SHORTS_HEIGHT))
+    final_audio = CompositeAudioClip([
+        audio_clip_question.set_start(0),
+        audio_clip_answer.set_start(audio_clip_question.duration + 3)
+    ])
+    final_clip = final_clip.set_audio(final_audio)
+
+    # --- Save and upload ---
+    video_tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+    final_clip.write_videofile(video_tmp.name, fps=24, codec="libx264", audio_codec="aac")
+    bucket_name, blob_name = output_gcs_path.replace("gs://","").split("/",1)
+    bucket = gcs_client.bucket(bucket_name)
+    blob = bucket.blob(blob_name)
+    blob.upload_from_filename(video_tmp.name)
+
+    return output_gcs_path

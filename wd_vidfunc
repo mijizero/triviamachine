@@ -1,0 +1,113 @@
+def create_trivia_video(question, choices, answer, background_gcs_path, output_gcs_path):
+    from textwrap import wrap
+    from moviepy.editor import CompositeAudioClip
+
+    # --- Download background image from GCS ---
+    bucket_name, blob_name = background_gcs_path.replace("gs://", "").split("/", 1)
+    bucket = gcs_client.bucket(bucket_name)
+    blob = bucket.blob(blob_name)
+    bg_tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+    blob.download_to_filename(bg_tmp.name)
+
+    # --- Prepare overlay text ---
+    choice_lines = [line.strip() for line in choices.strip().splitlines() if line.strip()]
+    formatted_choices_display = "\n\n".join(choice_lines)
+    overlay_text = f"{question}\n\n{formatted_choices_display}"  # remove answer from main display
+
+    # --- Prepare TTS text with SSML breaks ---
+    choice_lines_ssml = [f"{line}<break time='700ms'/>" for line in choice_lines]
+    formatted_choices_tts = "<break time='200ms'/>".join(choice_lines_ssml)
+    tts_text_question = f"<speak>{question}<break time='500ms'/>{formatted_choices_tts}</speak>"
+    tts_text_answer = f"<speak>{answer}</speak>"
+
+    # --- Generate narration audio ---
+    audio_tmp_question = synthesize_speech(tts_text_question, use_ssml=True)
+    audio_tmp_answer = synthesize_speech(tts_text_answer, use_ssml=True)
+    audio_clip_question = AudioFileClip(audio_tmp_question)
+    audio_clip_answer = AudioFileClip(audio_tmp_answer)
+
+    # --- Prepare background image ---
+    img = Image.open(bg_tmp.name).convert("RGB")
+    portrait_img = resize_to_shorts(img)
+    img_clip = ImageClip(np.array(portrait_img)).set_duration(audio_clip_question.duration + 5 + audio_clip_answer.duration)
+
+    # --- Overlay question & choices text ---
+    font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+    font_size = 75
+    font = ImageFont.truetype(font_path, font_size)
+
+    text_img = Image.new("RGBA", (SHORTS_WIDTH, SHORTS_HEIGHT), (0,0,0,0))
+    draw = ImageDraw.Draw(text_img)
+
+    max_width = SHORTS_WIDTH - 160
+    lines = []
+    for paragraph in overlay_text.split("\n"):
+        wrapped = wrap(paragraph, width=25)
+        lines.extend(wrapped)
+        lines.append("")
+
+    # Adjust font size if text too tall
+    def total_text_height(fnt):
+        heights = [draw.textbbox((0,0), line, font=fnt)[3]-draw.textbbox((0,0), line, font=fnt)[1] for line in lines]
+        return sum(heights) + (len(heights)-1)*20
+
+    while total_text_height(font) > SHORTS_HEIGHT - 100:
+        font_size -= 5
+        font = ImageFont.truetype(font_path, font_size)
+
+    line_heights = [draw.textbbox((0,0), line, font=font)[3]-draw.textbbox((0,0), line, font=font)[1] for line in lines]
+    total_height = sum(line_heights) + (len(line_heights)-1)*20
+    y = (SHORTS_HEIGHT - total_height)//2
+
+    for line, h in zip(lines, line_heights):
+        bbox = draw.textbbox((0,0), line, font=font)
+        w = bbox[2]-bbox[0]
+        x = (SHORTS_WIDTH - w)//2
+
+        border = 4
+        for dx in [-border,0,border]:
+            for dy in [-border,0,border]:
+                if dx != 0 or dy != 0:
+                    draw.text((x+dx, y+dy), line, font=font, fill="black")
+        draw.text((x, y), line, font=font, fill=(204,204,0))
+        y += h + 20
+
+    text_clip_question = ImageClip(np.array(text_img)).set_duration(audio_clip_question.duration)
+
+    # --- Overlay answer text (appear after 5-second pause) ---
+    text_img_answer = Image.new("RGBA", (SHORTS_WIDTH, SHORTS_HEIGHT), (0,0,0,0))
+    draw_answer = ImageDraw.Draw(text_img_answer)
+    answer_wrapped = wrap(answer, width=25)
+    y_ans = SHORTS_HEIGHT // 2 - 50
+    for line in answer_wrapped:
+        bbox = draw_answer.textbbox((0,0), line, font=font)
+        w, h = bbox[2]-bbox[0], bbox[3]-bbox[1]
+        x = (SHORTS_WIDTH - w)//2
+        border = 4
+        for dx in [-border,0,border]:
+            for dy in [-border,0,border]:
+                if dx != 0 or dy != 0:
+                    draw_answer.text((x+dx, y_ans+dy), line, font=font, fill="black")
+        draw_answer.text((x, y_ans), line, font=font, fill=(204,204,0))
+        y_ans += h + 20
+
+    text_clip_answer = ImageClip(np.array(text_img_answer)).set_start(audio_clip_question.duration + 5).set_duration(audio_clip_answer.duration)
+
+    # --- Compose final video with audio ---
+    final_clip = CompositeVideoClip([img_clip, text_clip_question, text_clip_answer], size=(SHORTS_WIDTH, SHORTS_HEIGHT))
+    final_audio = CompositeAudioClip([
+        audio_clip_question.set_start(0),
+        audio_clip_answer.set_start(audio_clip_question.duration + 5)
+    ])
+    final_clip = final_clip.set_audio(final_audio)
+
+    # --- Save and upload ---
+    video_tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+    final_clip.write_videofile(video_tmp.name, fps=24, codec="libx264", audio_codec="aac")
+
+    bucket_name, blob_name = output_gcs_path.replace("gs://","").split("/",1)
+    bucket = gcs_client.bucket(bucket_name)
+    blob = bucket.blob(blob_name)
+    blob.upload_from_filename(video_tmp.name)
+
+    return output_gcs_path

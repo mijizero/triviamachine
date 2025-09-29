@@ -1,0 +1,25 @@
+# Use Python base image
+FROM python:3.10-slim
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    fonts-dejavu-core \
+    libsm6 \
+    libxext6 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Copy requirements first (for caching)
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy app source
+COPY . .
+
+# Run with Gunicorn
+# Give the container a tiny buffer before starting Gunicorn
+# Start with Gunicorn (Cloud Run friendly)
+CMD exec gunicorn --bind :$PORT --workers 2 --threads 4 --timeout 0 main:app

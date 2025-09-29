@@ -1,0 +1,6 @@
+Flask==3.0.3
+gunicorn==21.2.0
+google-cloud-texttospeech==2.21.0
+google-cloud-storage==3.0.0
+moviepy==1.0.3
+pillow==10.4.0
