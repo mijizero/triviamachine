@@ -613,7 +613,7 @@ def generate_trivia():
         "Wow Really?",
         "Fun Fact Alert!",
         "Now You Know!",
-        "Not Bad!",
+        "Not Bad Hmmm!",
         "Mind-Blowing Fact!"
     ]
     youtube_title = random.choice(title_options)
