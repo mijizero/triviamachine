@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify
-from google.cloud import texttospeech, storage
+from google.cloud import texttospeech, storage, secretmanager
 from moviepy.editor import AudioFileClip, ImageClip, CompositeVideoClip, CompositeAudioClip
 from PIL import Image, ImageDraw, ImageFont
 import tempfile
@@ -34,6 +34,20 @@ PLAYLIST_MAP = {
     "science": "PLdQe9EVdFVKY4-FVQYpXBW2mo-o8y7as3",
     "tech": "PLdQe9EVdFVKZkoqcmP_Tz3ypCfDy1Z_14"
 }
+
+def get_credentials(secret_name: str):
+    """
+    Fetch credentials from Secret Manager and return a Credentials object.
+    """
+    client = secretmanager.SecretManagerServiceClient()
+    project_id = "trivia-machine-472207"  # your GCP project
+    secret_path = f"projects/{project_id}/secrets/Credentials_Trivia/versions/latest"
+    
+    response = client.access_secret_version(request={"name": secret_path})
+    secret_payload = response.payload.data.decode("UTF-8")
+    
+    creds_dict = json.loads(secret_payload)
+    return Credentials.from_authorized_user_info(creds_dict)
 
 # -------------------------
 # AI Explanation Generator
@@ -465,7 +479,7 @@ def create_trivia_video(question, choices, answer, explanation, background_gcs_p
 # -------------------------
 # YouTube Upload Helper
 # -------------------------
-def upload_video_to_youtube_gcs(gcs_path, title, description, category, tags=None, privacy="public"):
+def upload_video_to_youtube_gcs(gcs_path, title, description, category, credentials, tags=None, privacy="public"):
     # Map categories to YouTube categoryId + your playlistId
     category_map = {
         "pop culture": {"categoryId": "24", "playlistId": "PLdQe9EVdFVKZEmVz0g4awpwP5-dmGutGT"},
@@ -497,13 +511,7 @@ def upload_video_to_youtube_gcs(gcs_path, title, description, category, tags=Non
     playlist_id = category_map[category_key]["playlistId"]
 
     # Load YouTube credentials
-    CREDENTIALS_PATH = os.path.join(os.getcwd(), "credentials.json")
-    creds = Credentials.from_authorized_user_file(
-        CREDENTIALS_PATH,
-        ["https://www.googleapis.com/auth/youtube.upload",
-         "https://www.googleapis.com/auth/youtube.force-ssl"]
-    )
-    youtube = build("youtube", "v3", credentials=creds)
+    youtube = build("youtube", "v3", credentials=credentials)
 
     # Download video temporarily from GCS
     bucket_name, blob_name = gcs_path.replace("gs://", "").split("/", 1)
@@ -620,16 +628,20 @@ def generate_trivia():
 
     # Consistent description
     youtube_description = f"{trivia['question']} Did you get it right? What do you think of the fun fact? Now you know! See you at the comments!"
+
+     # Fetch credentials for each channel
+    creds_ch1 = get_credentials("Credentials_Trivia")
+    creds_ch2 = get_credentials("Credentials_Wordplay")
     
-    # Upload to YouTube
+    # Upload to YouTube - CHannel 1
     #video_id = upload_video_to_youtube_gcs(video_path, youtube_title, youtube_description, trivia["category"])
-    video_id = upload_video_to_youtube_gcs(video_path, youtube_title, youtube_description, trivia["category"])
+    video_id1 = upload_video_to_youtube_gcs(video_path, youtube_title, youtube_description, trivia["category"], creds_ch1)
 
 
     return jsonify({
         "video_gcs": video_path,
         "trivia": trivia,
-        "youtube_video_id": video_id
+        "youtube_video_id": video_id1
     })
 
 if __name__ == "__main__":
