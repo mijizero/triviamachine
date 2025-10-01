@@ -41,7 +41,7 @@ def get_credentials(secret_name: str):
     """
     client = secretmanager.SecretManagerServiceClient()
     project_id = "trivia-machine-472207"  # your GCP project
-    secret_path = f"projects/{project_id}/secrets/{secret_name}/versions/latest"
+    secret_path = f"projects/{project_id}/secrets/{secret_name}"
     
     response = client.access_secret_version(request={"name": secret_path})
     secret_payload = response.payload.data.decode("UTF-8")
