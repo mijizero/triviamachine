@@ -117,10 +117,10 @@ def summarize_fact(fact: str, max_chars: int = 60) -> str:
 # ---------------------------
 def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: str):
     from PIL import Image, ImageDraw, ImageFont
-    import tempfile
-    import subprocess
     import textwrap
     from google.cloud import storage, texttospeech
+    import subprocess
+    import os
 
     storage_client = storage.Client()
 
@@ -134,40 +134,43 @@ def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: st
     tmp_bg = "/tmp/background.jpg"
     bg_blob.download_to_filename(tmp_bg)
 
-    # --- Summarize fact ---
+    # --- Summarize fact to ~60 chars ---
     fact = summarize_fact(fact, 60)
 
-    # --- Synthesize TTS to WAV (safer for FFmpeg) ---
+    # --- Synthesize TTS ---
     tts_client = texttospeech.TextToSpeechClient()
     synthesis_input = texttospeech.SynthesisInput(text=fact)
     voice = texttospeech.VoiceSelectionParams(language_code="en-US", name="en-US-Neural2-C")
-    audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.LINEAR16)  # WAV
+    audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
     response = tts_client.synthesize_speech(
         input=synthesis_input, voice=voice, audio_config=audio_config
     )
-    tmp_audio = "/tmp/audio.wav"
+    tmp_audio = "/tmp/audio.mp3"
     with open(tmp_audio, "wb") as out:
         out.write(response.audio_content)
 
-    # --- Prepare wrapped text ---
-    fact_wrapped = "\n".join(textwrap.wrap(fact, width=30))
-
-    # --- Dynamic font sizing to fit 90% of screen ---
-    max_width, max_height = 720 * 0.9, 1280 * 0.9
+    # --- Wrap text ---
     fontfile = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-    fontsize, min_fontsize = 80, 20
+    max_width = 720 * 0.9
+    max_height = 1280 * 0.9
+    fontsize = 80
+    min_fontsize = 20
 
+    fact_wrapped = fact
     while fontsize >= min_fontsize:
-        tmp_img = Image.new("RGB", (720, 1280))
-        draw = ImageDraw.Draw(tmp_img)
         font = ImageFont.truetype(fontfile, fontsize)
-        bbox = draw.multiline_textbbox((0, 0), fact_wrapped, font=font, spacing=10)
-        text_w = bbox[2] - bbox[0]
-        text_h = bbox[3] - bbox[1]
-
+        lines = textwrap.wrap(fact, width=30)
+        img = Image.new("RGB", (720, 1280))
+        draw = ImageDraw.Draw(img)
+        # multiline_textsize returns width & height of block
+        text_w, text_h = draw.multiline_textsize("\n".join(lines), font=font, spacing=10)
         if text_w <= max_width and text_h <= max_height:
+            fact_wrapped = "\n".join(lines)
             break
-        fontsize -= 2  # decrement font
+        fontsize -= 2
+    else:
+        # fallback if too long
+        fact_wrapped = "\n".join(textwrap.wrap(fact, width=20))
 
     tmp_fact = "/tmp/fact.txt"
     with open(tmp_fact, "w") as f:
@@ -191,7 +194,7 @@ def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: st
     ]
     subprocess.run(ffmpeg_cmd, check=True)
 
-    # --- Upload result ---
+    # --- Upload video ---
     out_bucket = storage_client.bucket(out_bucket_name)
     out_blob = out_bucket.blob(out_blob_name)
     out_blob.upload_from_filename(tmp_out)
