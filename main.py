@@ -122,13 +122,17 @@ def summarize_fact(fact: str, max_chars: int = 60) -> str:
 def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: str):
     storage_client = storage.Client()
 
-    # --- Download background ---
-    bucket = storage_client.bucket(OUTPUT_BUCKET)
-    blob = bucket.blob("background.jpg")
-    tmp_bg = "/tmp/background.jpg"
-    blob.download_to_filename(tmp_bg)
+    # --- Parse GCS paths properly ---
+    bg_bucket_name, bg_blob_name = background_gcs_path.replace("gs://", "").split("/", 1)
+    out_bucket_name, out_blob_name = output_gcs_path.replace("gs://", "").split("/", 1)
 
-    # --- Summarize fact ---
+    # --- Download background from correct bucket ---
+    bg_bucket = storage_client.bucket(bg_bucket_name)
+    bg_blob = bg_bucket.blob(bg_blob_name)
+    tmp_bg = "/tmp/background.jpg"
+    bg_blob.download_to_filename(tmp_bg)
+
+    # --- Summarize fact (cap at 60 chars) ---
     fact = summarize_fact(fact, 60)
 
     # --- Synthesize TTS ---
@@ -178,7 +182,7 @@ def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: st
                 break
         fontsize -= 4
 
-    # --- Final ffmpeg render ---
+    # --- Final ffmpeg render (centered, with 90% width/height cap) ---
     ffmpeg_cmd = [
         "ffmpeg", "-y",
         "-loop", "1", "-i", tmp_bg,
@@ -194,11 +198,12 @@ def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: st
     ]
     subprocess.run(ffmpeg_cmd, check=True)
 
-    # --- Upload to GCS ---
-    out_blob = bucket.blob(output_gcs_path.replace(f"gs://{OUTPUT_BUCKET}/", ""))
+    # --- Upload to the correct output bucket ---
+    out_bucket = storage_client.bucket(out_bucket_name)
+    out_blob = out_bucket.blob(out_blob_name)
     out_blob.upload_from_filename(tmp_out)
 
-    return f"gs://{OUTPUT_BUCKET}/{output_gcs_path.replace(f'gs://{OUTPUT_BUCKET}/', '')}"
+    return output_gcs_path
     
 # ---------------------------
 # YouTube upload
@@ -232,15 +237,36 @@ def upload_to_youtube(video_gcs_path: str, title: str, description: str, secret_
 def generate_endpoint():
     fact = get_fact()
     ts = int(random.random() * 1e9)
-    output_gcs = f"fact_{ts}.mp4"
-    bg = f"gs://{OUTPUT_BUCKET}/background.jpg"
 
-    video_path = create_trivia_video(fact=fact, background_gcs_path=bg, output_gcs_path=f"gs://{OUTPUT_BUCKET}/{output_gcs}")
+    # Fixed background and output bucket
+    background_gcs_path = f"gs://{OUTPUT_BUCKET}/background.jpg"
+    output_gcs_path = f"gs://{OUTPUT_BUCKET}/fact_{ts}.mp4"
+
+    # --- Create video ---
+    video_path = create_trivia_video(
+        fact=fact,
+        background_gcs_path=background_gcs_path,
+        output_gcs_path=output_gcs_path
+    )
+
+    # --- YouTube metadata ---
     title = fact[:90]
     description = fact
-    video_id = upload_to_youtube(video_gcs_path=video_path, title=title, description=description, secret_name=YT_SECRET)
 
-    return jsonify({"fact": fact, "youtube_id": video_id, "video_gcs": video_path})
+    # --- Upload to YouTube ---
+    video_id = upload_to_youtube(
+        video_gcs_path=video_path,
+        title=title,
+        description=description,
+        secret_name=YT_SECRET
+    )
+
+    return jsonify({
+        "fact": fact,
+        "youtube_id": video_id,
+        "video_gcs": video_path
+    })
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
