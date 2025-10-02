@@ -19,7 +19,7 @@ app = Flask(__name__)
 # ---------------------------
 PROJECT_ID = "trivia-machine-472207"
 REGION = "asia-southeast1"
-OUTPUT_BUCKET = "trivia-videos-output"
+OUTPUT_BUCKET = os.getenv("OUTPUT_BUCKET", "trivia-videos-output")
 YT_SECRET = "Credentials_Trivia"
 
 # ---------------------------
@@ -84,119 +84,70 @@ def get_fact():
         return get_gemini_fact("trending news")
 
 # ---------------------------
-# Fact summarization
-# ---------------------------
-def compress_fact_with_gemini(fact: str, max_chars: int = 60) -> str:
-    """Call Gemini only when text exceeds max_chars, compress into one sentence."""
-    try:
-        client = aiplatform.gapic.PredictionServiceClient()
-        endpoint = client.endpoint_path(
-            project=PROJECT_ID, location=REGION, endpoint="gemini-2.5-flash"
-        )
-        prompt = f"Summarize this fact into one concise sentence under {max_chars} characters: {fact}"
-        response = client.predict(
-            endpoint=endpoint,
-            instances=[{"content": prompt}],
-            parameters={}
-        )
-        summary = response.predictions[0].get("content", "").strip()
-        if summary:
-            return summary[:max_chars]
-    except Exception as e:
-        print("Gemini compression failed, falling back:", e)
-    return fact[:max_chars-3] + "..."
-
-def summarize_fact(fact: str, max_chars: int = 60) -> str:
-    """Summarize fact only if longer than max_chars."""
-    if len(fact) <= max_chars:
-        return fact
-    return compress_fact_with_gemini(fact, max_chars)
-
-# ---------------------------
-# Video Generation
+# TTS + Video Generation
 # ---------------------------
 def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: str):
-    from PIL import Image, ImageDraw, ImageFont
-    import textwrap
-    import subprocess
-    from google.cloud import storage, texttospeech
-
     storage_client = storage.Client()
 
-    # --- Parse GCS paths ---
+    # --- Download background ---
     bg_bucket_name, bg_blob_name = background_gcs_path.replace("gs://", "").split("/", 1)
     out_bucket_name, out_blob_name = output_gcs_path.replace("gs://", "").split("/", 1)
-
-    # --- Download background ---
     bg_bucket = storage_client.bucket(bg_bucket_name)
     bg_blob = bg_bucket.blob(bg_blob_name)
     tmp_bg = "/tmp/background.jpg"
     bg_blob.download_to_filename(tmp_bg)
 
-    # --- Synthesize TTS ---
+    # --- Generate TTS ---
     tts_client = texttospeech.TextToSpeechClient()
     synthesis_input = texttospeech.SynthesisInput(text=fact)
     voice = texttospeech.VoiceSelectionParams(language_code="en-US", name="en-US-Neural2-C")
     audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
-    response = tts_client.synthesize_speech(
-        input=synthesis_input, voice=voice, audio_config=audio_config
-    )
+    response = tts_client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
     tmp_audio = "/tmp/audio.mp3"
     with open(tmp_audio, "wb") as out:
         out.write(response.audio_content)
 
-    # --- Dynamic font sizing for multi-line centered text ---
-    fontfile = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-    max_width = 720 * 0.9
-    max_height = 1280 * 0.9
+    # --- Prepare text overlay image ---
+    img = Image.open(tmp_bg).convert("RGB")
+    draw = ImageDraw.Draw(img)
+    max_width, max_height = img.width * 0.9, img.height * 0.9
+    font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
     fontsize = 80
     min_fontsize = 20
-    fact_wrapped = fact
-
+    wrapped = textwrap.wrap(fact, width=25)
+    
     while fontsize >= min_fontsize:
-        font = ImageFont.truetype(fontfile, fontsize)
-        lines = textwrap.wrap(fact, width=30)
-        img = Image.new("RGB", (720, 1280))
-        draw = ImageDraw.Draw(img)
-
-        # Get bounding box for multi-line text
-        bbox = draw.multiline_textbbox((0, 0), "\n".join(lines), font=font, spacing=10)
-        text_w = bbox[2] - bbox[0]
-        text_h = bbox[3] - bbox[1]
-
+        font = ImageFont.truetype(font_path, fontsize)
+        text_w = max(draw.textlength(line, font=font) for line in wrapped)
+        text_h = sum(font.getsize(line)[1] for line in wrapped) + 10 * (len(wrapped)-1)
         if text_w <= max_width and text_h <= max_height:
-            fact_wrapped = "\n".join(lines)
             break
-        fontsize -= 2
-    else:
-        fact_wrapped = "\n".join(textwrap.wrap(fact, width=20))
+        fontsize -= 4
+    # Draw text centered
+    y_offset = (img.height - text_h) / 2
+    for line in wrapped:
+        line_w = draw.textlength(line, font=font)
+        x = (img.width - line_w) / 2
+        draw.text((x, y_offset), line, font=font, fill="white")
+        y_offset += font.getsize(line)[1] + 10
+    tmp_text_img = "/tmp/text_img.jpg"
+    img.save(tmp_text_img)
 
-    # --- Save wrapped text to temporary file for ffmpeg ---
-    tmp_fact = "/tmp/fact.txt"
-    with open(tmp_fact, "w") as f:
-        f.write(fact_wrapped)
-
+    # --- Combine image + audio with FFmpeg ---
     tmp_out = "/tmp/output.mp4"
-
-    # --- Render final video with ffmpeg ---
     ffmpeg_cmd = [
         "ffmpeg", "-y",
-        "-loop", "1", "-i", tmp_bg,
+        "-loop", "1", "-i", tmp_text_img,
         "-i", tmp_audio,
-        "-vf",
-        f"scale=720:1280,drawtext=fontfile={fontfile}:textfile={tmp_fact}:fontsize={fontsize}:"
-        f"x=(w-text_w)/2:y=(h-text_h)/2:line_spacing=10:fontcolor=white:"
-        f"box=1:boxcolor=black@0.5:boxborderw=10",
         "-c:v", "libx264", "-tune", "stillimage",
         "-c:a", "aac", "-shortest", tmp_out
     ]
     subprocess.run(ffmpeg_cmd, check=True)
 
-    # --- Upload output video to GCS ---
+    # --- Upload to GCS ---
     out_bucket = storage_client.bucket(out_bucket_name)
     out_blob = out_bucket.blob(out_blob_name)
     out_blob.upload_from_filename(tmp_out)
-
     return output_gcs_path
 
 # ---------------------------
@@ -212,7 +163,6 @@ def upload_to_youtube(video_gcs_path: str, title: str, description: str, secret_
     blob.download_to_filename(tmp)
 
     media_body = MediaFileUpload(tmp, chunksize=-1, resumable=True)
-
     request = youtube.videos().insert(
         part="snippet,status",
         body={
@@ -224,7 +174,6 @@ def upload_to_youtube(video_gcs_path: str, title: str, description: str, secret_
     resp = request.execute()
     return resp.get("id")
 
-
 # ---------------------------
 # Main HTTP /generate
 # ---------------------------
@@ -232,36 +181,20 @@ def upload_to_youtube(video_gcs_path: str, title: str, description: str, secret_
 def generate_endpoint():
     fact = get_fact()
     ts = int(random.random() * 1e9)
-
-    # Fixed background and output bucket
     background_gcs_path = f"gs://{OUTPUT_BUCKET}/background.jpg"
     output_gcs_path = f"gs://{OUTPUT_BUCKET}/fact_{ts}.mp4"
 
-    # --- Create video ---
-    video_path = create_trivia_video(
-        fact=fact,
-        background_gcs_path=background_gcs_path,
-        output_gcs_path=output_gcs_path
-    )
+    video_path = create_trivia_video(fact, background_gcs_path, output_gcs_path)
 
-    # --- YouTube metadata ---
     title = fact[:90]
     description = fact
-
-    # --- Upload to YouTube ---
-    video_id = upload_to_youtube(
-        video_gcs_path=video_path,
-        title=title,
-        description=description,
-        secret_name=YT_SECRET
-    )
+    video_id = upload_to_youtube(video_path, title, description, YT_SECRET)
 
     return jsonify({
         "fact": fact,
         "youtube_id": video_id,
         "video_gcs": video_path
     })
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
