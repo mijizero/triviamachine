@@ -8,10 +8,14 @@ ENV PYTHONUNBUFFERED=1
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     fonts-dejavu-core \
+    fontconfig \
     libsm6 \
     libxext6 \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
+
+# Verify font availability (debugging only, can be removed later)
+RUN fc-list | grep DejaVuSans || true
 
 # Set working directory
 WORKDIR /app
@@ -23,9 +27,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy app source including credentials.json
 COPY . .
-
-# Ensure credentials.json is in /app
-# (already copied by the line above)
 
 # Run with Gunicorn (Cloud Run friendly)
 CMD ["gunicorn", "-b", "0.0.0.0:8080", "main:app", "--workers=2", "--threads=4", "--timeout=0"]
