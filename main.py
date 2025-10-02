@@ -8,9 +8,9 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from datetime import datetime
+import subprocess
 from PIL import Image, ImageDraw, ImageFont
 import textwrap
-import subprocess
 
 app = Flask(__name__)
 
@@ -84,74 +84,80 @@ def get_fact():
         return get_gemini_fact("trending news")
 
 # ---------------------------
-# TTS + Video Generation
+# Video Generation
 # ---------------------------
 def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: str):
     storage_client = storage.Client()
 
-    # --- Download background ---
+    if not fact:
+        fact = "Did you know honey never spoils?"
+
+    # Download background
     bg_bucket_name, bg_blob_name = background_gcs_path.replace("gs://", "").split("/", 1)
-    out_bucket_name, out_blob_name = output_gcs_path.replace("gs://", "").split("/", 1)
     bg_bucket = storage_client.bucket(bg_bucket_name)
     bg_blob = bg_bucket.blob(bg_blob_name)
     tmp_bg = "/tmp/background.jpg"
     bg_blob.download_to_filename(tmp_bg)
 
-    # --- Generate TTS ---
+    # Wrap text
+    max_width = 720 * 0.9
+    max_height = 1280 * 0.9
+    font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+    fontsize = 80
+    min_fontsize = 20
+    wrapped = textwrap.wrap(fact, width=30)
+
+    while fontsize >= min_fontsize:
+        font = ImageFont.truetype(font_path, fontsize)
+        img_dummy = Image.new("RGB", (720, 1280))
+        draw = ImageDraw.Draw(img_dummy)
+        line_heights = [draw.textsize(line, font=font)[1] for line in wrapped]
+        text_h = sum(line_heights) + (len(line_heights)-1)*10
+        text_w = max([draw.textlength(line, font=font) for line in wrapped]) if wrapped else 0
+        if text_w <= max_width and text_h <= max_height:
+            break
+        fontsize -= 4
+
+    tmp_fact = "/tmp/fact.txt"
+    with open(tmp_fact, "w") as f:
+        for line in wrapped:
+            f.write(line + "\n")
+
+    # TTS
     tts_client = texttospeech.TextToSpeechClient()
     synthesis_input = texttospeech.SynthesisInput(text=fact)
     voice = texttospeech.VoiceSelectionParams(language_code="en-US", name="en-US-Neural2-C")
     audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
-    response = tts_client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
+    tts_response = tts_client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
     tmp_audio = "/tmp/audio.mp3"
     with open(tmp_audio, "wb") as out:
-        out.write(response.audio_content)
+        out.write(tts_response.audio_content)
 
-    # --- Prepare text overlay image ---
-    img = Image.open(tmp_bg).convert("RGB")
-    draw = ImageDraw.Draw(img)
-    max_width, max_height = img.width * 0.9, img.height * 0.9
-    font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-    fontsize = 80
-    min_fontsize = 20
-    wrapped = textwrap.wrap(fact, width=25)
-    
-    while fontsize >= min_fontsize:
-        font = ImageFont.truetype(font_path, fontsize)
-        text_w = max(draw.textlength(line, font=font) for line in wrapped)
-        text_h = sum(font.getsize(line)[1] for line in wrapped) + 10 * (len(wrapped)-1)
-        if text_w <= max_width and text_h <= max_height:
-            break
-        fontsize -= 4
-    # Draw text centered
-    y_offset = (img.height - text_h) / 2
-    for line in wrapped:
-        line_w = draw.textlength(line, font=font)
-        x = (img.width - line_w) / 2
-        draw.text((x, y_offset), line, font=font, fill="white")
-        y_offset += font.getsize(line)[1] + 10
-    tmp_text_img = "/tmp/text_img.jpg"
-    img.save(tmp_text_img)
-
-    # --- Combine image + audio with FFmpeg ---
     tmp_out = "/tmp/output.mp4"
     ffmpeg_cmd = [
         "ffmpeg", "-y",
-        "-loop", "1", "-i", tmp_text_img,
+        "-loop", "1", "-i", tmp_bg,
         "-i", tmp_audio,
+        "-vf",
+        f"scale=720:1280,drawtext=fontfile={font_path}:textfile={tmp_fact}:"
+        f"fontsize={fontsize}:x=(w-text_w)/2:y=(h-text_h)/2:line_spacing=10:"
+        f"fontcolor=white:box=1:boxcolor=black@0.5:boxborderw=10",
         "-c:v", "libx264", "-tune", "stillimage",
-        "-c:a", "aac", "-shortest", tmp_out
+        "-c:a", "aac", "-shortest",
+        tmp_out
     ]
     subprocess.run(ffmpeg_cmd, check=True)
 
-    # --- Upload to GCS ---
+    # Upload to GCS
+    out_bucket_name, out_blob_name = output_gcs_path.replace("gs://", "").split("/", 1)
     out_bucket = storage_client.bucket(out_bucket_name)
     out_blob = out_bucket.blob(out_blob_name)
     out_blob.upload_from_filename(tmp_out)
+
     return output_gcs_path
 
 # ---------------------------
-# YouTube upload
+# YouTube Upload
 # ---------------------------
 def upload_to_youtube(video_gcs_path: str, title: str, description: str, secret_name: str, category_id: str = "24"):
     youtube = get_youtube_client(secret_name)
@@ -163,6 +169,7 @@ def upload_to_youtube(video_gcs_path: str, title: str, description: str, secret_
     blob.download_to_filename(tmp)
 
     media_body = MediaFileUpload(tmp, chunksize=-1, resumable=True)
+
     request = youtube.videos().insert(
         part="snippet,status",
         body={
@@ -175,20 +182,31 @@ def upload_to_youtube(video_gcs_path: str, title: str, description: str, secret_
     return resp.get("id")
 
 # ---------------------------
-# Main HTTP /generate
+# Flask Endpoint
 # ---------------------------
 @app.route("/generate", methods=["POST"])
 def generate_endpoint():
     fact = get_fact()
     ts = int(random.random() * 1e9)
+
     background_gcs_path = f"gs://{OUTPUT_BUCKET}/background.jpg"
     output_gcs_path = f"gs://{OUTPUT_BUCKET}/fact_{ts}.mp4"
 
-    video_path = create_trivia_video(fact, background_gcs_path, output_gcs_path)
+    video_path = create_trivia_video(
+        fact=fact,
+        background_gcs_path=background_gcs_path,
+        output_gcs_path=output_gcs_path
+    )
 
     title = fact[:90]
     description = fact
-    video_id = upload_to_youtube(video_path, title, description, YT_SECRET)
+
+    video_id = upload_to_youtube(
+        video_gcs_path=video_path,
+        title=title,
+        description=description,
+        secret_name=YT_SECRET
+    )
 
     return jsonify({
         "fact": fact,
