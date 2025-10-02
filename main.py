@@ -120,19 +120,20 @@ def summarize_fact(fact: str, max_chars: int = 60) -> str:
     return compress_fact_with_gemini(fact, max_chars)
 
 def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: str):
+    import textwrap
     storage_client = storage.Client()
 
     # --- Parse GCS paths properly ---
     bg_bucket_name, bg_blob_name = background_gcs_path.replace("gs://", "").split("/", 1)
     out_bucket_name, out_blob_name = output_gcs_path.replace("gs://", "").split("/", 1)
 
-    # --- Download background from correct bucket ---
+    # --- Download background ---
     bg_bucket = storage_client.bucket(bg_bucket_name)
     bg_blob = bg_bucket.blob(bg_blob_name)
     tmp_bg = "/tmp/background.jpg"
     bg_blob.download_to_filename(tmp_bg)
 
-    # --- Summarize fact (cap at 60 chars) ---
+    # --- Summarize fact to max 60 chars ---
     fact = summarize_fact(fact, 60)
 
     # --- Synthesize TTS ---
@@ -140,27 +141,24 @@ def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: st
     synthesis_input = texttospeech.SynthesisInput(text=fact)
     voice = texttospeech.VoiceSelectionParams(language_code="en-US", name="en-US-Neural2-C")
     audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
-    response = tts_client.synthesize_speech(
-        input=synthesis_input, voice=voice, audio_config=audio_config
-    )
+    response = tts_client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
     tmp_audio = "/tmp/audio.mp3"
     with open(tmp_audio, "wb") as out:
         out.write(response.audio_content)
 
-    # --- Save fact into file for ffmpeg drawtext ---
-    fact_wrapped = "\n".join(textwrap.wrap(fact, width=30))
+    # --- Prepare wrapped text for ffmpeg ---
     tmp_fact = "/tmp/fact.txt"
-    with open(tmp_fact, "w") as f:
-        f.write(fact_wrapped)
+    max_line_length = 30
+    wrapped_text = "\n".join(textwrap.wrap(fact, width=max_line_length))
+    with open(tmp_fact, "w", encoding="utf-8") as f:
+        f.write(wrapped_text)
 
-    tmp_out = "/tmp/output.mp4"
-
-    # --- Dynamic font sizing ---
+    # --- Dynamic font sizing to fit 90% width/height ---
     max_width = 720 * 0.9
     max_height = 1280 * 0.9
     fontfile = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
     fontsize = 80
-    min_fontsize = 20
+    min_fontsize = 24
 
     while fontsize >= min_fontsize:
         probe_cmd = [
@@ -168,21 +166,21 @@ def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: st
             "-vf", f"drawtext=fontfile={fontfile}:textfile={tmp_fact}:fontsize={fontsize}:x=0:y=0:alpha=0",
             "-frames:v", "1", "-f", "null", "-"
         ]
-        result = subprocess.run(probe_cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+        result = subprocess.run(probe_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         log = result.stderr.decode("utf-8")
 
-        if "text_w:" in log and "text_h:" in log:
-            try:
-                text_w = int(log.split("text_w:")[1].split()[0])
-                text_h = int(log.split("text_h:")[1].split()[0])
-            except Exception:
-                break
+        try:
+            text_w = int(log.split("text_w:")[1].split()[0])
+            text_h = int(log.split("text_h:")[1].split()[0])
+        except Exception:
+            break
 
-            if text_w <= max_width and text_h <= max_height:
-                break
-        fontsize -= 4
+        if text_w <= max_width and text_h <= max_height:
+            break
+        fontsize -= 2
 
-    # --- Final ffmpeg render (centered, with 90% width/height cap) ---
+    # --- Render final video with centered text block ---
+    tmp_out = "/tmp/output.mp4"
     ffmpeg_cmd = [
         "ffmpeg", "-y",
         "-loop", "1", "-i", tmp_bg,
@@ -198,7 +196,7 @@ def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: st
     ]
     subprocess.run(ffmpeg_cmd, check=True)
 
-    # --- Upload to the correct output bucket ---
+    # --- Upload final video ---
     out_bucket = storage_client.bucket(out_bucket_name)
     out_blob = out_bucket.blob(out_blob_name)
     out_blob.upload_from_filename(tmp_out)
