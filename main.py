@@ -10,6 +10,7 @@ from googleapiclient.http import MediaFileUpload
 from datetime import datetime
 import subprocess
 import textwrap
+from PIL import ImageFont, ImageDraw, Image
 
 app = Flask(__name__)
 
@@ -18,7 +19,7 @@ app = Flask(__name__)
 # ---------------------------
 PROJECT_ID = "trivia-machine-472207"
 REGION = "asia-southeast1"
-OUTPUT_BUCKET = "trivia-videos-output"
+OUTPUT_BUCKET = os.getenv("OUTPUT_BUCKET", "trivia-videos-output")
 YT_SECRET = "youtube-channel-1-creds"
 
 # ---------------------------
@@ -83,7 +84,7 @@ def get_fact():
         return get_gemini_fact("trending news")
 
 # ---------------------------
-# TTS + Video Generation
+# Summarize fact (optional Gemini compression)
 # ---------------------------
 def compress_fact_with_gemini(fact: str, max_chars: int = 60) -> str:
     try:
@@ -109,16 +110,13 @@ def summarize_fact(fact: str, max_chars: int = 60) -> str:
         return fact
     return compress_fact_with_gemini(fact, max_chars)
 
-from PIL import Image, ImageDraw, ImageFont
-import textwrap
-import subprocess
-from google.cloud import storage, texttospeech, aiplatform
-import os
-
+# ---------------------------
+# Create trivia video
+# ---------------------------
 def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: str):
     storage_client = storage.Client()
 
-    # --- Parse GCS paths properly ---
+    # --- Parse GCS paths ---
     bg_bucket_name, bg_blob_name = background_gcs_path.replace("gs://", "").split("/", 1)
     out_bucket_name, out_blob_name = output_gcs_path.replace("gs://", "").split("/", 1)
 
@@ -131,23 +129,22 @@ def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: st
     # --- Summarize fact ---
     fact = summarize_fact(fact, 60)
 
-    # --- Synthesize TTS ---
+    # --- TTS WAV ---
     tts_client = texttospeech.TextToSpeechClient()
     synthesis_input = texttospeech.SynthesisInput(text=fact)
     voice = texttospeech.VoiceSelectionParams(language_code="en-US", name="en-US-Neural2-C")
-    audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
-    response = tts_client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
-    tmp_audio = "/tmp/audio.mp3"
+    audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.LINEAR16)
+    response = tts_client.synthesize_speech(
+        input=synthesis_input, voice=voice, audio_config=audio_config
+    )
+    tmp_audio = "/tmp/audio.wav"
     with open(tmp_audio, "wb") as out:
         out.write(response.audio_content)
 
-    # --- Wrap text ---
-    fact_wrapped = "\n".join(textwrap.wrap(fact, width=30))
+    # --- Save fact for drawtext ---
     tmp_fact = "/tmp/fact.txt"
     with open(tmp_fact, "w") as f:
-        f.write(fact_wrapped)
-
-    tmp_out = "/tmp/output.mp4"
+        f.write(fact)
 
     # --- Dynamic font sizing ---
     max_width = 720 * 0.9
@@ -156,21 +153,20 @@ def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: st
     fontsize = 80
     min_fontsize = 20
 
-    while fontsize >= min_fontsize:
-        font = ImageFont.truetype(fontfile, fontsize)
-        img = Image.new("RGB", (720, 1280))
-        draw = ImageDraw.Draw(img)
-
-        # Use multiline_textbbox to get width/height
-        bbox = draw.multiline_textbbox((0, 0), fact_wrapped, font=font, spacing=10)
-        text_w = bbox[2] - bbox[0]
-        text_h = bbox[3] - bbox[1]
-
+    # Determine suitable fontsize
+    for fs in range(fontsize, min_fontsize - 1, -2):
+        font = ImageFont.truetype(fontfile, fs)
+        lines = textwrap.wrap(fact, width=30)
+        dummy_img = Image.new("RGB", (720, 1280))
+        draw = ImageDraw.Draw(dummy_img)
+        text_w = max(draw.textsize(line, font=font)[0] for line in lines)
+        text_h = sum(draw.textsize(line, font=font)[1] + 10 for line in lines) - 10
         if text_w <= max_width and text_h <= max_height:
+            fontsize = fs
             break
-        fontsize -= 2
 
-    # --- Final ffmpeg render ---
+    # --- Render video ---
+    tmp_out = "/tmp/output.mp4"
     ffmpeg_cmd = [
         "ffmpeg", "-y",
         "-loop", "1", "-i", tmp_bg,
@@ -186,7 +182,7 @@ def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: st
     ]
     subprocess.run(ffmpeg_cmd, check=True)
 
-    # --- Upload to GCS ---
+    # --- Upload video ---
     out_bucket = storage_client.bucket(out_bucket_name)
     out_blob = out_bucket.blob(out_blob_name)
     out_blob.upload_from_filename(tmp_out)
@@ -206,7 +202,6 @@ def upload_to_youtube(video_gcs_path: str, title: str, description: str, secret_
     blob.download_to_filename(tmp)
 
     media_body = MediaFileUpload(tmp, chunksize=-1, resumable=True)
-
     request = youtube.videos().insert(
         part="snippet,status",
         body={
@@ -219,29 +214,25 @@ def upload_to_youtube(video_gcs_path: str, title: str, description: str, secret_
     return resp.get("id")
 
 # ---------------------------
-# Main HTTP /generate
+# Main endpoint
 # ---------------------------
 @app.route("/generate", methods=["POST"])
 def generate_endpoint():
     fact = get_fact()
     ts = int(random.random() * 1e9)
 
-    # Fixed background and output bucket
     background_gcs_path = f"gs://{OUTPUT_BUCKET}/background.jpg"
     output_gcs_path = f"gs://{OUTPUT_BUCKET}/fact_{ts}.mp4"
 
-    # --- Create video ---
     video_path = create_trivia_video(
         fact=fact,
         background_gcs_path=background_gcs_path,
         output_gcs_path=output_gcs_path
     )
 
-    # --- YouTube metadata ---
     title = fact[:90]
     description = fact
 
-    # --- Upload to YouTube ---
     video_id = upload_to_youtube(
         video_gcs_path=video_path,
         title=title,
