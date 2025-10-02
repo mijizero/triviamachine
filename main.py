@@ -109,62 +109,68 @@ def summarize_fact(fact: str, max_chars: int = 60) -> str:
         return fact
     return compress_fact_with_gemini(fact, max_chars)
 
+from PIL import Image, ImageDraw, ImageFont
+import textwrap
+import subprocess
+from google.cloud import storage, texttospeech, aiplatform
+import os
+
 def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: str):
     storage_client = storage.Client()
 
-    # --- Parse GCS paths ---
+    # --- Parse GCS paths properly ---
     bg_bucket_name, bg_blob_name = background_gcs_path.replace("gs://", "").split("/", 1)
     out_bucket_name, out_blob_name = output_gcs_path.replace("gs://", "").split("/", 1)
 
     # --- Download background ---
-    tmp_bg = "/tmp/background.jpg"
     bg_bucket = storage_client.bucket(bg_bucket_name)
     bg_blob = bg_bucket.blob(bg_blob_name)
+    tmp_bg = "/tmp/background.jpg"
     bg_blob.download_to_filename(tmp_bg)
 
-    # --- Summarize fact if >60 chars ---
+    # --- Summarize fact ---
     fact = summarize_fact(fact, 60)
 
-    # --- Wrap text for multi-line display ---
-    max_line_chars = 30
-    lines = textwrap.wrap(fact, width=max_line_chars)
-    fact_wrapped = "\n".join(lines)
+    # --- Synthesize TTS ---
+    tts_client = texttospeech.TextToSpeechClient()
+    synthesis_input = texttospeech.SynthesisInput(text=fact)
+    voice = texttospeech.VoiceSelectionParams(language_code="en-US", name="en-US-Neural2-C")
+    audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
+    response = tts_client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
+    tmp_audio = "/tmp/audio.mp3"
+    with open(tmp_audio, "wb") as out:
+        out.write(response.audio_content)
 
+    # --- Wrap text ---
+    fact_wrapped = "\n".join(textwrap.wrap(fact, width=30))
     tmp_fact = "/tmp/fact.txt"
     with open(tmp_fact, "w") as f:
         f.write(fact_wrapped)
 
-    # --- TTS WAV (LINEAR16) to avoid MP3 misdetection ---
-    tts_client = texttospeech.TextToSpeechClient()
-    synthesis_input = texttospeech.SynthesisInput(text=fact)
-    voice = texttospeech.VoiceSelectionParams(language_code="en-US", name="en-US-Neural2-C")
-    audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.LINEAR16)
-    response = tts_client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
-
-    tmp_audio = "/tmp/audio.wav"
-    with open(tmp_audio, "wb") as out:
-        out.write(response.audio_content)
+    tmp_out = "/tmp/output.mp4"
 
     # --- Dynamic font sizing ---
-    fontfile = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
     max_width = 720 * 0.9
     max_height = 1280 * 0.9
+    fontfile = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
     fontsize = 80
     min_fontsize = 20
 
-    # Measure text dimensions using PIL for reliable sizing
-    from PIL import ImageFont, ImageDraw, Image
     while fontsize >= min_fontsize:
         font = ImageFont.truetype(fontfile, fontsize)
         img = Image.new("RGB", (720, 1280))
         draw = ImageDraw.Draw(img)
-        text_w, text_h = draw.multiline_textsize(fact_wrapped, font=font, spacing=10)
+
+        # Use multiline_textbbox to get width/height
+        bbox = draw.multiline_textbbox((0, 0), fact_wrapped, font=font, spacing=10)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
+
         if text_w <= max_width and text_h <= max_height:
             break
         fontsize -= 2
 
-    # --- Render final video ---
-    tmp_out = "/tmp/output.mp4"
+    # --- Final ffmpeg render ---
     ffmpeg_cmd = [
         "ffmpeg", "-y",
         "-loop", "1", "-i", tmp_bg,
