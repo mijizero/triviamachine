@@ -118,9 +118,8 @@ def summarize_fact(fact: str, max_chars: int = 60) -> str:
 def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: str):
     from PIL import Image, ImageDraw, ImageFont
     import textwrap
-    from google.cloud import storage, texttospeech
     import subprocess
-    import os
+    from google.cloud import storage, texttospeech
 
     storage_client = storage.Client()
 
@@ -134,9 +133,6 @@ def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: st
     tmp_bg = "/tmp/background.jpg"
     bg_blob.download_to_filename(tmp_bg)
 
-    # --- Summarize fact to ~60 chars ---
-    fact = summarize_fact(fact, 60)
-
     # --- Synthesize TTS ---
     tts_client = texttospeech.TextToSpeechClient()
     synthesis_input = texttospeech.SynthesisInput(text=fact)
@@ -149,52 +145,54 @@ def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: st
     with open(tmp_audio, "wb") as out:
         out.write(response.audio_content)
 
-    # --- Wrap text ---
+    # --- Dynamic font sizing for multi-line centered text ---
     fontfile = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
     max_width = 720 * 0.9
     max_height = 1280 * 0.9
     fontsize = 80
     min_fontsize = 20
-
     fact_wrapped = fact
+
     while fontsize >= min_fontsize:
         font = ImageFont.truetype(fontfile, fontsize)
         lines = textwrap.wrap(fact, width=30)
         img = Image.new("RGB", (720, 1280))
         draw = ImageDraw.Draw(img)
-        # multiline_textsize returns width & height of block
-        text_w, text_h = draw.multiline_textsize("\n".join(lines), font=font, spacing=10)
+
+        # Get bounding box for multi-line text
+        bbox = draw.multiline_textbbox((0, 0), "\n".join(lines), font=font, spacing=10)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
+
         if text_w <= max_width and text_h <= max_height:
             fact_wrapped = "\n".join(lines)
             break
         fontsize -= 2
     else:
-        # fallback if too long
         fact_wrapped = "\n".join(textwrap.wrap(fact, width=20))
 
+    # --- Save wrapped text to temporary file for ffmpeg ---
     tmp_fact = "/tmp/fact.txt"
     with open(tmp_fact, "w") as f:
         f.write(fact_wrapped)
 
     tmp_out = "/tmp/output.mp4"
 
-    # --- FFmpeg render ---
+    # --- Render final video with ffmpeg ---
     ffmpeg_cmd = [
         "ffmpeg", "-y",
         "-loop", "1", "-i", tmp_bg,
         "-i", tmp_audio,
-        "-vf", (
-            f"scale=720:1280,"
-            f"drawtext=fontfile={fontfile}:textfile={tmp_fact}:fontsize={fontsize}:"
-            f"x=(w-text_w)/2:y=(h-text_h)/2:line_spacing=10:"
-            f"fontcolor=white:box=1:boxcolor=black@0.5:boxborderw=10"
-        ),
+        "-vf",
+        f"scale=720:1280,drawtext=fontfile={fontfile}:textfile={tmp_fact}:fontsize={fontsize}:"
+        f"x=(w-text_w)/2:y=(h-text_h)/2:line_spacing=10:fontcolor=white:"
+        f"box=1:boxcolor=black@0.5:boxborderw=10",
         "-c:v", "libx264", "-tune", "stillimage",
         "-c:a", "aac", "-shortest", tmp_out
     ]
     subprocess.run(ffmpeg_cmd, check=True)
 
-    # --- Upload video ---
+    # --- Upload output video to GCS ---
     out_bucket = storage_client.bucket(out_bucket_name)
     out_blob = out_bucket.blob(out_blob_name)
     out_blob.upload_from_filename(tmp_out)
