@@ -116,9 +116,15 @@ def summarize_fact(fact: str, max_chars: int = 60) -> str:
 # Video Generation
 # ---------------------------
 def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: str):
+    from PIL import Image, ImageDraw, ImageFont
+    import tempfile
+    import subprocess
+    import textwrap
+    from google.cloud import storage, texttospeech
+
     storage_client = storage.Client()
 
-    # --- Parse GCS paths properly ---
+    # --- Parse GCS paths ---
     bg_bucket_name, bg_blob_name = background_gcs_path.replace("gs://", "").split("/", 1)
     out_bucket_name, out_blob_name = output_gcs_path.replace("gs://", "").split("/", 1)
 
@@ -131,11 +137,11 @@ def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: st
     # --- Summarize fact ---
     fact = summarize_fact(fact, 60)
 
-    # --- TTS WAV ---
+    # --- Synthesize TTS to WAV (safer for FFmpeg) ---
     tts_client = texttospeech.TextToSpeechClient()
     synthesis_input = texttospeech.SynthesisInput(text=fact)
     voice = texttospeech.VoiceSelectionParams(language_code="en-US", name="en-US-Neural2-C")
-    audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.LINEAR16)
+    audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.LINEAR16)  # WAV
     response = tts_client.synthesize_speech(
         input=synthesis_input, voice=voice, audio_config=audio_config
     )
@@ -143,55 +149,49 @@ def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: st
     with open(tmp_audio, "wb") as out:
         out.write(response.audio_content)
 
-    if not os.path.exists(tmp_audio) or os.path.getsize(tmp_audio) == 0:
-        raise RuntimeError("TTS audio generation failed")
+    # --- Prepare wrapped text ---
+    fact_wrapped = "\n".join(textwrap.wrap(fact, width=30))
 
-    # --- Create text overlay image for proper centering ---
-    img = Image.open(tmp_bg).convert("RGBA")
-    draw = ImageDraw.Draw(img)
-    font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-
-    # dynamically fit font to 90% width and height
-    max_width = int(img.width * 0.9)
-    max_height = int(img.height * 0.9)
-    fontsize = 80
-    min_fontsize = 20
-
-    fact_wrapped = textwrap.fill(fact, width=30)
+    # --- Dynamic font sizing to fit 90% of screen ---
+    max_width, max_height = 720 * 0.9, 1280 * 0.9
+    fontfile = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+    fontsize, min_fontsize = 80, 20
 
     while fontsize >= min_fontsize:
-        font = ImageFont.truetype(font_path, fontsize)
-        text_w, text_h = draw.multiline_textsize(fact_wrapped, font=font, spacing=10)
+        tmp_img = Image.new("RGB", (720, 1280))
+        draw = ImageDraw.Draw(tmp_img)
+        font = ImageFont.truetype(fontfile, fontsize)
+        bbox = draw.multiline_textbbox((0, 0), fact_wrapped, font=font, spacing=10)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
+
         if text_w <= max_width and text_h <= max_height:
             break
-        fontsize -= 2
+        fontsize -= 2  # decrement font
 
-    # Calculate top-left to center text
-    x = (img.width - text_w) // 2
-    y = (img.height - text_h) // 2
-    # Draw semi-transparent box
-    box_padding = 10
-    draw.rectangle(
-        [x - box_padding, y - box_padding, x + text_w + box_padding, y + text_h + box_padding],
-        fill=(0, 0, 0, 128)
-    )
-    draw.multiline_text((x, y), fact_wrapped, font=font, fill="white", spacing=10)
-    tmp_text_img = "/tmp/text_overlay.png"
-    img.save(tmp_text_img)
+    tmp_fact = "/tmp/fact.txt"
+    with open(tmp_fact, "w") as f:
+        f.write(fact_wrapped)
 
     tmp_out = "/tmp/output.mp4"
 
-    # --- FFmpeg combine ---
+    # --- FFmpeg render ---
     ffmpeg_cmd = [
         "ffmpeg", "-y",
-        "-loop", "1", "-i", tmp_text_img,
+        "-loop", "1", "-i", tmp_bg,
         "-i", tmp_audio,
-        "-c:v", "libx264", "-tune", "stillimage", "-pix_fmt", "yuv420p",
+        "-vf", (
+            f"scale=720:1280,"
+            f"drawtext=fontfile={fontfile}:textfile={tmp_fact}:fontsize={fontsize}:"
+            f"x=(w-text_w)/2:y=(h-text_h)/2:line_spacing=10:"
+            f"fontcolor=white:box=1:boxcolor=black@0.5:boxborderw=10"
+        ),
+        "-c:v", "libx264", "-tune", "stillimage",
         "-c:a", "aac", "-shortest", tmp_out
     ]
     subprocess.run(ffmpeg_cmd, check=True)
 
-    # --- Upload to GCS ---
+    # --- Upload result ---
     out_bucket = storage_client.bucket(out_bucket_name)
     out_blob = out_bucket.blob(out_blob_name)
     out_blob.upload_from_filename(tmp_out)
