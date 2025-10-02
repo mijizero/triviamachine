@@ -14,6 +14,8 @@ RUN apt-get update && apt-get install -y \
     libsm6 \
     libxext6 \
     build-essential \
+    libjpeg-dev \
+    zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Verify font availability (debugging only, can be removed later)
