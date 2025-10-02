@@ -9,6 +9,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from datetime import datetime
 import subprocess
+import textwrap
 
 app = Flask(__name__)
 
@@ -84,17 +85,7 @@ def get_fact():
 # ---------------------------
 # TTS + Video Generation
 # ---------------------------
-import subprocess
-import textwrap
-import os
-from google.cloud import storage, texttospeech, aiplatform
-
-OUTPUT_BUCKET = os.getenv("OUTPUT_BUCKET")
-PROJECT_ID = "trivia-machine-472207"
-REGION = "asia-southeast1"
-
 def compress_fact_with_gemini(fact: str, max_chars: int = 60) -> str:
-    """Call Gemini only when text exceeds max_chars, compress into one sentence."""
     try:
         client = aiplatform.gapic.PredictionServiceClient()
         endpoint = client.endpoint_path(
@@ -114,72 +105,65 @@ def compress_fact_with_gemini(fact: str, max_chars: int = 60) -> str:
     return fact[:max_chars-3] + "..."
 
 def summarize_fact(fact: str, max_chars: int = 60) -> str:
-    """Summarize fact only if longer than max_chars."""
     if len(fact) <= max_chars:
         return fact
     return compress_fact_with_gemini(fact, max_chars)
 
 def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: str):
-    import textwrap
     storage_client = storage.Client()
 
-    # --- Parse GCS paths properly ---
+    # --- Parse GCS paths ---
     bg_bucket_name, bg_blob_name = background_gcs_path.replace("gs://", "").split("/", 1)
     out_bucket_name, out_blob_name = output_gcs_path.replace("gs://", "").split("/", 1)
 
     # --- Download background ---
+    tmp_bg = "/tmp/background.jpg"
     bg_bucket = storage_client.bucket(bg_bucket_name)
     bg_blob = bg_bucket.blob(bg_blob_name)
-    tmp_bg = "/tmp/background.jpg"
     bg_blob.download_to_filename(tmp_bg)
 
-    # --- Summarize fact to max 60 chars ---
+    # --- Summarize fact if >60 chars ---
     fact = summarize_fact(fact, 60)
 
-    # --- Synthesize TTS ---
+    # --- Wrap text for multi-line display ---
+    max_line_chars = 30
+    lines = textwrap.wrap(fact, width=max_line_chars)
+    fact_wrapped = "\n".join(lines)
+
+    tmp_fact = "/tmp/fact.txt"
+    with open(tmp_fact, "w") as f:
+        f.write(fact_wrapped)
+
+    # --- TTS WAV (LINEAR16) to avoid MP3 misdetection ---
     tts_client = texttospeech.TextToSpeechClient()
     synthesis_input = texttospeech.SynthesisInput(text=fact)
     voice = texttospeech.VoiceSelectionParams(language_code="en-US", name="en-US-Neural2-C")
-    audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
+    audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.LINEAR16)
     response = tts_client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
-    tmp_audio = "/tmp/audio.mp3"
+
+    tmp_audio = "/tmp/audio.wav"
     with open(tmp_audio, "wb") as out:
         out.write(response.audio_content)
 
-    # --- Prepare wrapped text for ffmpeg ---
-    tmp_fact = "/tmp/fact.txt"
-    max_line_length = 30
-    wrapped_text = "\n".join(textwrap.wrap(fact, width=max_line_length))
-    with open(tmp_fact, "w", encoding="utf-8") as f:
-        f.write(wrapped_text)
-
-    # --- Dynamic font sizing to fit 90% width/height ---
+    # --- Dynamic font sizing ---
+    fontfile = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
     max_width = 720 * 0.9
     max_height = 1280 * 0.9
-    fontfile = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
     fontsize = 80
-    min_fontsize = 24
+    min_fontsize = 20
 
+    # Measure text dimensions using PIL for reliable sizing
+    from PIL import ImageFont, ImageDraw, Image
     while fontsize >= min_fontsize:
-        probe_cmd = [
-            "ffmpeg", "-i", tmp_bg,
-            "-vf", f"drawtext=fontfile={fontfile}:textfile={tmp_fact}:fontsize={fontsize}:x=0:y=0:alpha=0",
-            "-frames:v", "1", "-f", "null", "-"
-        ]
-        result = subprocess.run(probe_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        log = result.stderr.decode("utf-8")
-
-        try:
-            text_w = int(log.split("text_w:")[1].split()[0])
-            text_h = int(log.split("text_h:")[1].split()[0])
-        except Exception:
-            break
-
+        font = ImageFont.truetype(fontfile, fontsize)
+        img = Image.new("RGB", (720, 1280))
+        draw = ImageDraw.Draw(img)
+        text_w, text_h = draw.multiline_textsize(fact_wrapped, font=font, spacing=10)
         if text_w <= max_width and text_h <= max_height:
             break
         fontsize -= 2
 
-    # --- Render final video with centered text block ---
+    # --- Render final video ---
     tmp_out = "/tmp/output.mp4"
     ffmpeg_cmd = [
         "ffmpeg", "-y",
@@ -196,13 +180,13 @@ def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: st
     ]
     subprocess.run(ffmpeg_cmd, check=True)
 
-    # --- Upload final video ---
+    # --- Upload to GCS ---
     out_bucket = storage_client.bucket(out_bucket_name)
     out_blob = out_bucket.blob(out_blob_name)
     out_blob.upload_from_filename(tmp_out)
 
     return output_gcs_path
-    
+
 # ---------------------------
 # YouTube upload
 # ---------------------------
@@ -264,7 +248,6 @@ def generate_endpoint():
         "youtube_id": video_id,
         "video_gcs": video_path
     })
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
