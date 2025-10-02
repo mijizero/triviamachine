@@ -3,6 +3,8 @@ FROM python:3.10-slim
 
 # Prevent Python from writing .pyc files and buffering stdout/stderr
 ENV PYTHONUNBUFFERED=1
+# Set OUTPUT_BUCKET environment variable
+ENV OUTPUT_BUCKET=trivia-videos-output
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
