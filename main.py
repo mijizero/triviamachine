@@ -42,33 +42,35 @@ def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: st
     with open(tmp_audio, "wb") as f:
         f.write(response.audio_content)
 
-    # --- Wrap text and calculate position ---
+    # --- Wrap text and dynamic font sizing ---
     img = Image.open(tmp_bg).convert("RGB")
     draw = ImageDraw.Draw(img)
     font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-    font_size = 60
-    font = ImageFont.truetype(font_path, font_size)
 
-    max_width = img.width * 0.9
+    # Max allowed height for text (70% of image height)
+    max_text_height = img.height * 0.7
+
+    # Start with a large font size and reduce until text fits
+    font_size = 100
     wrapped = textwrap.wrap(fact, width=30)
+    while font_size > 10:
+        font = ImageFont.truetype(font_path, font_size)
+        line_heights = [draw.textbbox((0,0), line, font=font)[3] - draw.textbbox((0,0), line, font=font)[1] for line in wrapped]
+        total_height = sum(line_heights) + 10 * (len(wrapped) - 1)
+        if total_height <= max_text_height:
+            break
+        font_size -= 2
 
-    # Calculate total height
-    line_heights = []
-    for line in wrapped:
-        bbox = draw.textbbox((0,0), line, font=font)
-        line_heights.append(bbox[3] - bbox[1])
-    total_height = sum(line_heights) + 10 * (len(wrapped) - 1)
-
+    # Vertical centering
     y_start = (img.height - total_height) / 2
 
     # Draw each line centered
-    draw_img = ImageDraw.Draw(img)
     y = y_start
     for i, line in enumerate(wrapped):
-        bbox = draw_img.textbbox((0,0), line, font=font)
+        bbox = draw.textbbox((0,0), line, font=font)
         line_width = bbox[2] - bbox[0]
         x = (img.width - line_width) / 2
-        draw_img.text((x, y), line, font=font, fill="white")
+        draw.text((x, y), line, font=font, fill="white")
         y += line_heights[i] + 10
 
     tmp_text_img = "/tmp/text_bg.jpg"
