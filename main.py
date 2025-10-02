@@ -85,6 +85,10 @@ def get_fact():
 # TTS + Video Generation
 # ---------------------------
 def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: str):
+    import os
+    import subprocess
+    from google.cloud import storage, texttospeech
+
     storage_client = storage.Client()
 
     # download background
@@ -96,59 +100,48 @@ def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: st
     # synthesize TTS
     tts_client = texttospeech.TextToSpeechClient()
     synthesis_input = texttospeech.SynthesisInput(text=fact)
-    voice = texttospeech.VoiceSelectionParams(
-        language_code="en-US",
-        name="en-US-Neural2-C"
-    )
-    audio_config = texttospeech.AudioConfig(
-        audio_encoding=texttospeech.AudioEncoding.MP3
-    )
+    voice = texttospeech.VoiceSelectionParams(language_code="en-US", name="en-US-Neural2-C")
+    audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
     response = tts_client.synthesize_speech(
-        input=synthesis_input,
-        voice=voice,
-        audio_config=audio_config
+        input=synthesis_input, voice=voice, audio_config=audio_config
     )
     tmp_audio = "/tmp/audio.mp3"
     with open(tmp_audio, "wb") as out:
         out.write(response.audio_content)
 
-    # limit text length to 60 chars
-    if len(fact) > 60:
+    # ensure text is safe for ffmpeg
+    fact = fact.strip().replace("\n", " ")
+    if len(fact) > 60:  # limit to 60 chars
         fact = fact[:57] + "..."
 
-    # adjust font size dynamically
-    if len(fact) <= 30:
-        font_size = 48
-    elif len(fact) <= 45:
-        font_size = 40
-    else:
-        font_size = 32
-
-    # write fact text into a file (UTF-8 safe)
-    fact_file = "/tmp/fact.txt"
-    with open(fact_file, "w", encoding="utf-8") as f:
+    # save fact text into file for drawtext
+    tmp_fact_file = "/tmp/fact.txt"
+    with open(tmp_fact_file, "w") as f:
         f.write(fact)
 
-    tmp_out = "/tmp/output.mp4"
+    # detect available font
+    font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+    if not os.path.exists(font_path):
+        try:
+            # fallback: get the first system font available
+            font_list = subprocess.check_output(["fc-list", ":", "file"]).decode("utf-8")
+            font_path = font_list.split("\n")[0].split(":")[0] if font_list else ""
+        except Exception:
+            font_path = ""
 
+    # ffmpeg command
+    tmp_out = "/tmp/output.mp4"
     ffmpeg_cmd = [
         "ffmpeg", "-y",
         "-loop", "1", "-i", tmp_bg,
         "-i", tmp_audio,
-        "-vf", (
-            "scale=720:1280,"
-            "drawtext="
-            f"fontcolor=white:fontsize={font_size}:x=(w-text_w)/2:y=h-100:"
-            "box=1:boxcolor=black@0.5:"
-            f"textfile={fact_file}:"
-            "fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
-            "reload=1"
-        ),
+        "-vf", f"scale=720:1280,drawtext=fontcolor=white:fontsize=48:"
+               f"x=(w-text_w)/2:y=h-100:box=1:boxcolor=black@0.5:"
+               f"textfile={tmp_fact_file}:fontfile={font_path}:reload=1",
         "-c:v", "libx264", "-tune", "stillimage",
         "-c:a", "aac", "-shortest",
         tmp_out
     ]
-
     subprocess.run(ffmpeg_cmd, check=True)
 
     # upload to GCS
