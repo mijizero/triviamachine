@@ -9,6 +9,7 @@ ENV OUTPUT_BUCKET=trivia-videos-output
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     ffmpeg \
+    libavcodec-extra \
     fonts-dejavu-core \
     fontconfig \
     libsm6 \
