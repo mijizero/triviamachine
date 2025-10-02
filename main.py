@@ -20,7 +20,7 @@ app = Flask(__name__)
 PROJECT_ID = "trivia-machine-472207"
 REGION = "asia-southeast1"
 OUTPUT_BUCKET = "trivia-videos-output"
-YT_SECRET = "youtube-channel-1-creds"
+YT_SECRET = "Credentials_Trivia"
 
 # ---------------------------
 # Secret / Credential Helpers
