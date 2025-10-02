@@ -84,20 +84,54 @@ def get_fact():
 # ---------------------------
 # TTS + Video Generation
 # ---------------------------
-def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: str):
-    import os
-    import subprocess
-    from google.cloud import storage, texttospeech
+import subprocess
+import textwrap
+import os
+from google.cloud import storage, texttospeech, aiplatform
 
+OUTPUT_BUCKET = os.getenv("OUTPUT_BUCKET")
+PROJECT_ID = "trivia-machine-472207"
+REGION = "asia-southeast1"
+
+def compress_fact_with_gemini(fact: str, max_chars: int = 60) -> str:
+    """Call Gemini only when text exceeds max_chars, compress into one sentence."""
+    try:
+        client = aiplatform.gapic.PredictionServiceClient()
+        endpoint = client.endpoint_path(
+            project=PROJECT_ID, location=REGION, endpoint="gemini-2.5-flash"
+        )
+        prompt = f"Summarize this fact into one concise sentence under {max_chars} characters: {fact}"
+        response = client.predict(
+            endpoint=endpoint,
+            instances=[{"content": prompt}],
+            parameters={}
+        )
+        summary = response.predictions[0].get("content", "").strip()
+        if summary:
+            return summary[:max_chars]
+    except Exception as e:
+        print("Gemini compression failed, falling back:", e)
+    return fact[:max_chars-3] + "..."
+
+def summarize_fact(fact: str, max_chars: int = 60) -> str:
+    """Summarize fact only if longer than max_chars."""
+    if len(fact) <= max_chars:
+        return fact
+    return compress_fact_with_gemini(fact, max_chars)
+
+def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: str):
     storage_client = storage.Client()
 
-    # download background
+    # --- Download background ---
     bucket = storage_client.bucket(OUTPUT_BUCKET)
     blob = bucket.blob("background.jpg")
     tmp_bg = "/tmp/background.jpg"
     blob.download_to_filename(tmp_bg)
 
-    # synthesize TTS
+    # --- Summarize fact ---
+    fact = summarize_fact(fact, 60)
+
+    # --- Synthesize TTS ---
     tts_client = texttospeech.TextToSpeechClient()
     synthesis_input = texttospeech.SynthesisInput(text=fact)
     voice = texttospeech.VoiceSelectionParams(language_code="en-US", name="en-US-Neural2-C")
@@ -109,44 +143,61 @@ def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: st
     with open(tmp_audio, "wb") as out:
         out.write(response.audio_content)
 
-    # ensure text is safe for ffmpeg
-    fact = fact.strip().replace("\n", " ")
-    if len(fact) > 60:  # limit to 60 chars
-        fact = fact[:57] + "..."
+    # --- Save fact into file for ffmpeg drawtext ---
+    fact_wrapped = "\n".join(textwrap.wrap(fact, width=30))
+    tmp_fact = "/tmp/fact.txt"
+    with open(tmp_fact, "w") as f:
+        f.write(fact_wrapped)
 
-    # save fact text into file for drawtext
-    tmp_fact_file = "/tmp/fact.txt"
-    with open(tmp_fact_file, "w") as f:
-        f.write(fact)
-
-    # detect available font
-    font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-    if not os.path.exists(font_path):
-        try:
-            # fallback: get the first system font available
-            font_list = subprocess.check_output(["fc-list", ":", "file"]).decode("utf-8")
-            font_path = font_list.split("\n")[0].split(":")[0] if font_list else ""
-        except Exception:
-            font_path = ""
-
-    # ffmpeg command
     tmp_out = "/tmp/output.mp4"
+
+    # --- Dynamic font sizing ---
+    max_width = 720 * 0.9
+    max_height = 1280 * 0.9
+    fontfile = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+    fontsize = 80
+    min_fontsize = 20
+
+    while fontsize >= min_fontsize:
+        probe_cmd = [
+            "ffmpeg", "-i", tmp_bg,
+            "-vf", f"drawtext=fontfile={fontfile}:textfile={tmp_fact}:fontsize={fontsize}:x=0:y=0:alpha=0",
+            "-frames:v", "1", "-f", "null", "-"
+        ]
+        result = subprocess.run(probe_cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+        log = result.stderr.decode("utf-8")
+
+        if "text_w:" in log and "text_h:" in log:
+            try:
+                text_w = int(log.split("text_w:")[1].split()[0])
+                text_h = int(log.split("text_h:")[1].split()[0])
+            except Exception:
+                break
+
+            if text_w <= max_width and text_h <= max_height:
+                break
+        fontsize -= 4
+
+    # --- Final ffmpeg render ---
     ffmpeg_cmd = [
         "ffmpeg", "-y",
         "-loop", "1", "-i", tmp_bg,
         "-i", tmp_audio,
-        "-vf", f"scale=720:1280,drawtext=fontcolor=white:fontsize=48:"
-               f"x=(w-text_w)/2:y=h-100:box=1:boxcolor=black@0.5:"
-               f"textfile={tmp_fact_file}:fontfile={font_path}:reload=1",
+        "-vf", (
+            f"scale=720:1280,"
+            f"drawtext=fontfile={fontfile}:textfile={tmp_fact}:fontsize={fontsize}:"
+            f"x=(w-text_w)/2:y=(h-text_h)/2:line_spacing=10:"
+            f"fontcolor=white:box=1:boxcolor=black@0.5:boxborderw=10"
+        ),
         "-c:v", "libx264", "-tune", "stillimage",
-        "-c:a", "aac", "-shortest",
-        tmp_out
+        "-c:a", "aac", "-shortest", tmp_out
     ]
     subprocess.run(ffmpeg_cmd, check=True)
 
-    # upload to GCS
+    # --- Upload to GCS ---
     out_blob = bucket.blob(output_gcs_path.replace(f"gs://{OUTPUT_BUCKET}/", ""))
     out_blob.upload_from_filename(tmp_out)
+
     return f"gs://{OUTPUT_BUCKET}/{output_gcs_path.replace(f'gs://{OUTPUT_BUCKET}/', '')}"
     
 # ---------------------------
