@@ -96,33 +96,66 @@ def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: st
     # synthesize TTS
     tts_client = texttospeech.TextToSpeechClient()
     synthesis_input = texttospeech.SynthesisInput(text=fact)
-    voice = texttospeech.VoiceSelectionParams(language_code="en-US", name="en-US-Neural2-C")
-    audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
-    response = tts_client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
+    voice = texttospeech.VoiceSelectionParams(
+        language_code="en-US",
+        name="en-US-Neural2-C"
+    )
+    audio_config = texttospeech.AudioConfig(
+        audio_encoding=texttospeech.AudioEncoding.MP3
+    )
+    response = tts_client.synthesize_speech(
+        input=synthesis_input,
+        voice=voice,
+        audio_config=audio_config
+    )
     tmp_audio = "/tmp/audio.mp3"
     with open(tmp_audio, "wb") as out:
         out.write(response.audio_content)
 
-    # generate video with ffmpeg
+    # limit text length to 60 chars
+    if len(fact) > 60:
+        fact = fact[:57] + "..."
+
+    # adjust font size dynamically
+    if len(fact) <= 30:
+        font_size = 48
+    elif len(fact) <= 45:
+        font_size = 40
+    else:
+        font_size = 32
+
+    # write fact text into a file (UTF-8 safe)
+    fact_file = "/tmp/fact.txt"
+    with open(fact_file, "w", encoding="utf-8") as f:
+        f.write(fact)
+
     tmp_out = "/tmp/output.mp4"
-    # Burn subtitles with drawtext
-    fact_escaped = fact.replace(":", "\\:").replace("'", "\\'")
+
     ffmpeg_cmd = [
         "ffmpeg", "-y",
         "-loop", "1", "-i", tmp_bg,
         "-i", tmp_audio,
-        "-vf", f"scale=720:1280,drawtext=text='{fact_escaped}':fontcolor=white:fontsize=36:x=(w-text_w)/2:y=h-100:box=1:boxcolor=black@0.5",
+        "-vf", (
+            "scale=720:1280,"
+            "drawtext="
+            f"fontcolor=white:fontsize={font_size}:x=(w-text_w)/2:y=h-100:"
+            "box=1:boxcolor=black@0.5:"
+            f"textfile={fact_file}:"
+            "fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
+            "reload=1"
+        ),
         "-c:v", "libx264", "-tune", "stillimage",
         "-c:a", "aac", "-shortest",
         tmp_out
     ]
+
     subprocess.run(ffmpeg_cmd, check=True)
 
     # upload to GCS
     out_blob = bucket.blob(output_gcs_path.replace(f"gs://{OUTPUT_BUCKET}/", ""))
     out_blob.upload_from_filename(tmp_out)
     return f"gs://{OUTPUT_BUCKET}/{output_gcs_path.replace(f'gs://{OUTPUT_BUCKET}/', '')}"
-
+    
 # ---------------------------
 # YouTube upload
 # ---------------------------
