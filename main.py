@@ -1,154 +1,98 @@
 import os
-import random
-import json
-import requests
-from flask import Flask, jsonify
-from google.cloud import secretmanager, storage, texttospeech, aiplatform
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
-from datetime import datetime
-import subprocess
-from PIL import Image, ImageDraw, ImageFont
 import textwrap
+import subprocess
+from flask import Flask, jsonify
+from google.cloud import storage, texttospeech
+from PIL import Image, ImageDraw, ImageFont
 
 app = Flask(__name__)
 
-# ---------------------------
 # CONFIG
-# ---------------------------
 PROJECT_ID = "trivia-machine-472207"
 REGION = "asia-southeast1"
 OUTPUT_BUCKET = os.getenv("OUTPUT_BUCKET", "trivia-videos-output")
-YT_SECRET = "Credentials_Trivia"
 
 # ---------------------------
-# Secret / Credential Helpers
+# Minimal Fact + Paths
 # ---------------------------
-def get_credentials(secret_name: str):
-    client = secretmanager.SecretManagerServiceClient()
-    secret_path = f"projects/{PROJECT_ID}/secrets/{secret_name}/versions/latest"
-    response = client.access_secret_version(request={"name": secret_path})
-    secret_payload = response.payload.data.decode("UTF-8")
-    creds_dict = json.loads(secret_payload)
-    return Credentials.from_authorized_user_info(creds_dict)
-
-def get_youtube_client(secret_name: str):
-    creds = get_credentials(secret_name)
-    youtube = build("youtube", "v3", credentials=creds)
-    return youtube
+FACT = "Honey never spoils. Archaeologists have found edible honey in ancient Egyptian tombs over 3000 years old."
+BACKGROUND_GCS_PATH = f"gs://{OUTPUT_BUCKET}/background.jpg"
+OUTPUT_GCS_PATH = f"gs://{OUTPUT_BUCKET}/output.mp4"
 
 # ---------------------------
-# Fact sources
-# ---------------------------
-def get_wikipedia_featured():
-    dt = datetime.utcnow()
-    url = f"https://api.wikimedia.org/feed/v1/wikipedia/en/featured/{dt.year}/{dt.month:02d}/{dt.day:02d}"
-    try:
-        resp = requests.get(url, timeout=5)
-        data = resp.json()
-        tfa = data.get("tfa")
-        if tfa and "extract" in tfa:
-            return f"Did you know? {tfa['extract']}"
-        mr = data.get("mostread", {}).get("articles", [])
-        if mr:
-            fact = mr[0].get("extract") or mr[0].get("title")
-            return f"Did you know? {fact}"
-    except Exception as e:
-        print("Wikipedia fetch failed:", e)
-    return "Did you know honey never spoils?"
-
-def call_gemini(prompt: str):
-    aiplatform.init(project=PROJECT_ID, location=REGION)
-    model = aiplatform.TextGenerationModel.from_pretrained("gemini-1.5-flash")
-    response = model.predict(prompt)
-    return response.text
-
-def get_gemini_fact(category: str):
-    prompt = f"Give me one surprising 'Did you know?' fact about {category}, in one or two sentences."
-    try:
-        return call_gemini(prompt).strip()
-    except Exception as e:
-        print("Gemini call failed:", e)
-        return ""
-
-def get_fact():
-    choice = random.choice([1, 2, 3, 4])
-    if choice == 1:
-        return get_wikipedia_featured()
-    elif choice == 2:
-        return get_gemini_fact("technology")
-    elif choice == 3:
-        return get_gemini_fact("science, history, or culture")
-    else:
-        return get_gemini_fact("trending news")
-
-# ---------------------------
-# Video Generation
+# Video Creation
 # ---------------------------
 def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: str):
     storage_client = storage.Client()
 
-    if not fact:
-        fact = "Did you know honey never spoils?"
-
-    # Download background
+    # --- Download background ---
     bg_bucket_name, bg_blob_name = background_gcs_path.replace("gs://", "").split("/", 1)
     bg_bucket = storage_client.bucket(bg_bucket_name)
     bg_blob = bg_bucket.blob(bg_blob_name)
     tmp_bg = "/tmp/background.jpg"
     bg_blob.download_to_filename(tmp_bg)
 
-    # Wrap text
-    max_width = 720 * 0.9
-    max_height = 1280 * 0.9
-    font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-    fontsize = 80
-    min_fontsize = 20
-    wrapped = textwrap.wrap(fact, width=30)
-
-    while fontsize >= min_fontsize:
-        font = ImageFont.truetype(font_path, fontsize)
-        img_dummy = Image.new("RGB", (720, 1280))
-        draw = ImageDraw.Draw(img_dummy)
-        line_heights = [draw.textsize(line, font=font)[1] for line in wrapped]
-        text_h = sum(line_heights) + (len(line_heights)-1)*10
-        text_w = max([draw.textlength(line, font=font) for line in wrapped]) if wrapped else 0
-        if text_w <= max_width and text_h <= max_height:
-            break
-        fontsize -= 4
-
-    tmp_fact = "/tmp/fact.txt"
-    with open(tmp_fact, "w") as f:
-        for line in wrapped:
-            f.write(line + "\n")
-
-    # TTS
+    # --- Synthesize TTS ---
     tts_client = texttospeech.TextToSpeechClient()
     synthesis_input = texttospeech.SynthesisInput(text=fact)
     voice = texttospeech.VoiceSelectionParams(language_code="en-US", name="en-US-Neural2-C")
     audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
-    tts_response = tts_client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
+    response = tts_client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
     tmp_audio = "/tmp/audio.mp3"
-    with open(tmp_audio, "wb") as out:
-        out.write(tts_response.audio_content)
+    with open(tmp_audio, "wb") as f:
+        f.write(response.audio_content)
+
+    # --- Wrap text and calculate position ---
+    img = Image.open(tmp_bg).convert("RGB")
+    draw = ImageDraw.Draw(img)
+    font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+    font_size = 60
+    font = ImageFont.truetype(font_path, font_size)
+
+    max_width = img.width * 0.9
+    wrapped = textwrap.wrap(fact, width=30)
+
+    # Calculate total height
+    line_heights = []
+    for line in wrapped:
+        bbox = draw.textbbox((0,0), line, font=font)
+        line_heights.append(bbox[3] - bbox[1])
+    total_height = sum(line_heights) + 10 * (len(wrapped) - 1)
+
+    y_start = (img.height - total_height) / 2
+
+    # Draw each line centered
+    draw_img = ImageDraw.Draw(img)
+    y = y_start
+    for i, line in enumerate(wrapped):
+        bbox = draw_img.textbbox((0,0), line, font=font)
+        line_width = bbox[2] - bbox[0]
+        x = (img.width - line_width) / 2
+        draw_img.text((x, y), line, font=font, fill="white")
+        y += line_heights[i] + 10
+
+    tmp_text_img = "/tmp/text_bg.jpg"
+    img.save(tmp_text_img)
 
     tmp_out = "/tmp/output.mp4"
+
+    # --- FFmpeg combine ---
     ffmpeg_cmd = [
         "ffmpeg", "-y",
-        "-loop", "1", "-i", tmp_bg,
+        "-loop", "1",
+        "-i", tmp_text_img,
         "-i", tmp_audio,
-        "-vf",
-        f"scale=720:1280,drawtext=fontfile={font_path}:textfile={tmp_fact}:"
-        f"fontsize={fontsize}:x=(w-text_w)/2:y=(h-text_h)/2:line_spacing=10:"
-        f"fontcolor=white:box=1:boxcolor=black@0.5:boxborderw=10",
-        "-c:v", "libx264", "-tune", "stillimage",
-        "-c:a", "aac", "-shortest",
+        "-c:v", "libx264",
+        "-tune", "stillimage",
+        "-c:a", "aac",
+        "-shortest",
+        "-pix_fmt", "yuv420p",
+        "-vf", "scale=720:1280",
         tmp_out
     ]
     subprocess.run(ffmpeg_cmd, check=True)
 
-    # Upload to GCS
+    # --- Upload to GCS ---
     out_bucket_name, out_blob_name = output_gcs_path.replace("gs://", "").split("/", 1)
     out_bucket = storage_client.bucket(out_bucket_name)
     out_blob = out_bucket.blob(out_blob_name)
@@ -157,62 +101,12 @@ def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: st
     return output_gcs_path
 
 # ---------------------------
-# YouTube Upload
-# ---------------------------
-def upload_to_youtube(video_gcs_path: str, title: str, description: str, secret_name: str, category_id: str = "24"):
-    youtube = get_youtube_client(secret_name)
-    bucket_name, blob_name = video_gcs_path.replace("gs://", "").split("/", 1)
-    storage_client = storage.Client()
-    bucket = storage_client.bucket(bucket_name)
-    blob = bucket.blob(blob_name)
-    tmp = f"/tmp/{os.path.basename(blob_name)}"
-    blob.download_to_filename(tmp)
-
-    media_body = MediaFileUpload(tmp, chunksize=-1, resumable=True)
-
-    request = youtube.videos().insert(
-        part="snippet,status",
-        body={
-            "snippet": {"title": title, "description": description, "categoryId": category_id},
-            "status": {"privacyStatus": "public"}
-        },
-        media_body=media_body,
-    )
-    resp = request.execute()
-    return resp.get("id")
-
-# ---------------------------
-# Flask Endpoint
+# HTTP Endpoint
 # ---------------------------
 @app.route("/generate", methods=["POST"])
 def generate_endpoint():
-    fact = get_fact()
-    ts = int(random.random() * 1e9)
-
-    background_gcs_path = f"gs://{OUTPUT_BUCKET}/background.jpg"
-    output_gcs_path = f"gs://{OUTPUT_BUCKET}/fact_{ts}.mp4"
-
-    video_path = create_trivia_video(
-        fact=fact,
-        background_gcs_path=background_gcs_path,
-        output_gcs_path=output_gcs_path
-    )
-
-    title = fact[:90]
-    description = fact
-
-    video_id = upload_to_youtube(
-        video_gcs_path=video_path,
-        title=title,
-        description=description,
-        secret_name=YT_SECRET
-    )
-
-    return jsonify({
-        "fact": fact,
-        "youtube_id": video_id,
-        "video_gcs": video_path
-    })
+    video_path = create_trivia_video(FACT, BACKGROUND_GCS_PATH, OUTPUT_GCS_PATH)
+    return jsonify({"fact": FACT, "video_gcs": video_path})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
