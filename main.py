@@ -1,128 +1,136 @@
 import os
-import textwrap
+import re
 import subprocess
-from flask import Flask, jsonify
-from google.cloud import storage, texttospeech
-from mutagen.mp3 import MP3
-from PIL import Image, ImageDraw, ImageFont
+import tempfile
+from flask import Flask, request, jsonify
+from google.cloud import storage
+from gtts import gTTS
+from pydub import AudioSegment
 
 app = Flask(__name__)
 
-# CONFIG
-PROJECT_ID = "trivia-machine-472207"
-REGION = "asia-southeast1"
-OUTPUT_BUCKET = os.getenv("OUTPUT_BUCKET", "trivia-videos-output")
+# -------------------------------
+# Helpers
+# -------------------------------
 
-# ---------------------------
-# Minimal Fact + Paths
-# ---------------------------
-FACT = "Honey never spoils. Archaeologists have found edible honey in ancient Egyptian tombs over 3000 years old."
-BACKGROUND_GCS_PATH = f"gs://{OUTPUT_BUCKET}/background.jpg"
-OUTPUT_GCS_PATH = f"gs://{OUTPUT_BUCKET}/output.mp4"
+def escape_ffmpeg_text(text: str) -> str:
+    """Escape text for FFmpeg drawtext filter."""
+    text = text.replace(":", r"\\:")
+    text = text.replace("'", r"\\'")
+    text = text.replace(",", r"\\,")
+    text = text.replace("[", r"\\[")
+    text = text.replace("]", r"\\]")
+    return text
 
-# ---------------------------
-# Video Creation
-# ---------------------------
-def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: str):
-    storage_client = storage.Client()
+def split_text_for_screen(text: str, max_chars=25):
+    """
+    Split text into chunks that fit on screen lines.
+    Instead of hardcoding word counts, we respect max_chars per line.
+    """
+    words = text.split()
+    lines = []
+    current = []
 
-    # --- Download background ---
-    bg_bucket_name, bg_blob_name = background_gcs_path.replace("gs://", "").split("/", 1)
-    bg_bucket = storage_client.bucket(bg_bucket_name)
-    bg_blob = bg_bucket.blob(bg_blob_name)
-    tmp_bg = "/tmp/background.jpg"
-    bg_blob.download_to_filename(tmp_bg)
-
-    # --- Synthesize TTS ---
-    tts_client = texttospeech.TextToSpeechClient()
-    synthesis_input = texttospeech.SynthesisInput(text=fact)
-    voice = texttospeech.VoiceSelectionParams(language_code="en-US", name="en-US-Neural2-C")
-    audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
-    response = tts_client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
-    tmp_audio = "/tmp/audio.mp3"
-    with open(tmp_audio, "wb") as f:
-        f.write(response.audio_content)
-
-    # --- Calculate audio duration ---
-    audio = MP3(tmp_audio)
-    audio_duration = audio.info.length
-
-    # --- Split fact into phrases ---
-    img = Image.open(tmp_bg).convert("RGB")
-    draw = ImageDraw.Draw(img)
-    font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-    font_size = 60
-    font = ImageFont.truetype(font_path, font_size)
-    max_width = img.width * 0.8
-
-    # Break into phrases that fit one line
-    words = fact.split()
-    phrases = []
-    current_phrase = []
     for word in words:
-        test_phrase = " ".join(current_phrase + [word])
-        bbox = draw.textbbox((0, 0), test_phrase, font=font)
-        width = bbox[2] - bbox[0]
-        if width <= max_width:
-            current_phrase.append(word)
+        test_line = " ".join(current + [word])
+        if len(test_line) > max_chars:
+            lines.append(" ".join(current))
+            current = [word]
         else:
-            phrases.append(" ".join(current_phrase))
-            current_phrase = [word]
-    if current_phrase:
-        phrases.append(" ".join(current_phrase))
+            current.append(word)
+    if current:
+        lines.append(" ".join(current))
 
-    # --- Calculate timing per phrase ---
-    n_phrases = len(phrases)
-    phrase_duration = audio_duration / n_phrases
+    return lines
 
-    # --- Build FFmpeg drawtext filter ---
-    drawtext_filters = []
-    for i, phrase in enumerate(phrases):
-        start = i * phrase_duration
-        end = (i + 1) * phrase_duration
-        filter_str = (
-            f"drawtext=fontfile={font_path}:"
-            f"text='{phrase}':"
-            f"fontcolor=white:fontsize={font_size}:"
-            f"x=(w-text_w)/2:y=(h-text_h)/2:"
-            f"enable='between(t,{start},{end})'"
-        )
-        drawtext_filters.append(filter_str)
-    vf = ",".join(drawtext_filters)
+def upload_to_gcs(local_path, gcs_path):
+    """Upload file to GCS and return public URL."""
+    client = storage.Client()
+    bucket_name, blob_path = gcs_path.replace("gs://", "").split("/", 1)
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(blob_path)
+    blob.upload_from_filename(local_path)
+    return f"https://storage.googleapis.com/{bucket_name}/{blob_path}"
 
-    tmp_out = "/tmp/output.mp4"
+# -------------------------------
+# Core: Create Video
+# -------------------------------
 
-    # --- Run FFmpeg ---
-    ffmpeg_cmd = [
-        "ffmpeg", "-y",
-        "-loop", "1",
-        "-i", tmp_bg,
-        "-i", tmp_audio,
-        "-c:v", "libx264",
-        "-tune", "stillimage",
-        "-c:a", "aac",
-        "-pix_fmt", "yuv420p",
-        "-shortest",
-        "-vf", vf,
-        tmp_out
-    ]
-    subprocess.run(ffmpeg_cmd, check=True)
+def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Download background
+        bg_path = os.path.join(tmpdir, "background.jpg")
+        subprocess.run(["gsutil", "cp", background_gcs_path, bg_path], check=True)
 
-    # --- Upload to GCS ---
-    out_bucket_name, out_blob_name = output_gcs_path.replace("gs://", "").split("/", 1)
-    out_bucket = storage_client.bucket(out_bucket_name)
-    out_blob = out_bucket.blob(out_blob_name)
-    out_blob.upload_from_filename(tmp_out)
+        # TTS generation
+        audio_path = os.path.join(tmpdir, "audio.mp3")
+        tts = gTTS(fact_text)
+        tts.save(audio_path)
 
-    return output_gcs_path
+        # Measure audio
+        audio = AudioSegment.from_file(audio_path)
+        audio_duration = len(audio) / 1000.0  # in seconds
 
-# ---------------------------
-# HTTP Endpoint
-# ---------------------------
+        # Split text into screen lines
+        phrases = split_text_for_screen(fact_text, max_chars=25)
+        phrase_duration = audio_duration / len(phrases)
+
+        # Build FFmpeg drawtext filters
+        font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+        font_size = 60
+        drawtext_filters = []
+
+        for i, phrase in enumerate(phrases):
+            phrase_safe = escape_ffmpeg_text(phrase)
+            start = round(i * phrase_duration, 2)
+            end = round((i + 1) * phrase_duration, 2)
+
+            filter_str = (
+                f"drawtext=fontfile={font_path}:"
+                f"text='{phrase_safe}':"
+                f"fontcolor=white:fontsize={font_size}:"
+                f"x=(w-text_w)/2:y=(h-text_h)/2:"
+                f"enable='between(t,{start},{end})'"
+            )
+            drawtext_filters.append(filter_str)
+
+        filter_complex = ",".join(drawtext_filters)
+
+        # Output video
+        output_path = os.path.join(tmpdir, "output.mp4")
+        ffmpeg_cmd = [
+            "ffmpeg", "-y",
+            "-loop", "1", "-i", bg_path,
+            "-i", audio_path,
+            "-c:v", "libx264", "-tune", "stillimage",
+            "-c:a", "aac", "-pix_fmt", "yuv420p",
+            "-shortest",
+            "-vf", filter_complex,
+            output_path
+        ]
+
+        subprocess.run(ffmpeg_cmd, check=True)
+
+        # Upload to GCS
+        return upload_to_gcs(output_path, output_gcs_path)
+
+# -------------------------------
+# Flask Endpoint
+# -------------------------------
+
 @app.route("/generate", methods=["POST"])
 def generate_endpoint():
-    video_path = create_trivia_video(FACT, BACKGROUND_GCS_PATH, OUTPUT_GCS_PATH)
-    return jsonify({"fact": FACT, "video_gcs": video_path})
+    data = request.json
+    fact = data.get("fact", "Honey never spoils. Archaeologists have found edible honey in ancient Egyptian tombs over 3000 years old.")
+    background_gcs_path = data.get("background", "gs://my-bucket/background.jpg")
+    output_gcs_path = data.get("output", "gs://my-bucket/output.mp4")
+
+    try:
+        video_url = create_trivia_video(fact, background_gcs_path, output_gcs_path)
+        return jsonify({"video_url": video_url})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+    app.run(host="0.0.0.0", port=8080)
