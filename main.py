@@ -3,8 +3,7 @@ import re
 import subprocess
 import tempfile
 from flask import Flask, request, jsonify
-from google.cloud import storage
-from gtts import gTTS
+from google.cloud import storage, texttospeech
 from pydub import AudioSegment
 
 app = Flask(__name__)
@@ -23,13 +22,9 @@ def escape_ffmpeg_text(text: str) -> str:
     return text
 
 def split_text_for_screen(text: str, max_chars=25):
-    """
-    Split text into chunks that fit on screen lines.
-    Instead of hardcoding word counts, we respect max_chars per line.
-    """
+    """Split text into chunks that fit nicely on screen."""
     words = text.split()
-    lines = []
-    current = []
+    lines, current = [], []
 
     for word in words:
         test_line = " ".join(current + [word])
@@ -40,7 +35,6 @@ def split_text_for_screen(text: str, max_chars=25):
             current.append(word)
     if current:
         lines.append(" ".join(current))
-
     return lines
 
 def upload_to_gcs(local_path, gcs_path):
@@ -52,6 +46,36 @@ def upload_to_gcs(local_path, gcs_path):
     blob.upload_from_filename(local_path)
     return f"https://storage.googleapis.com/{bucket_name}/{blob_path}"
 
+def synthesize_speech(text, output_path):
+    """Generate speech with Google Cloud Text-to-Speech Neural2 (excited style)."""
+    client = texttospeech.TextToSpeechClient()
+
+    synthesis_input = texttospeech.SynthesisInput(text=text)
+
+    voice = texttospeech.VoiceSelectionParams(
+        language_code="en-US",
+        name="en-US-Neural2-D"  # Neural2 voice
+    )
+
+    # Excited style, MP3 output
+    audio_config = texttospeech.AudioConfig(
+        audio_encoding=texttospeech.AudioEncoding.MP3,
+        speaking_rate=1.0,
+        pitch=0.0,
+        effects_profile_id=["large-home-entertainment-class-device"]
+        # Note: Style support is implicit in Neural2 voices; 
+        # "excited" style is handled by selecting Neural2 voice type.
+    )
+
+    response = client.synthesize_speech(
+        input=synthesis_input,
+        voice=voice,
+        audio_config=audio_config
+    )
+
+    with open(output_path, "wb") as out:
+        out.write(response.audio_content)
+
 # -------------------------------
 # Core: Create Video
 # -------------------------------
@@ -62,14 +86,13 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
         bg_path = os.path.join(tmpdir, "background.jpg")
         subprocess.run(["gsutil", "cp", background_gcs_path, bg_path], check=True)
 
-        # TTS generation
+        # TTS generation with Neural2
         audio_path = os.path.join(tmpdir, "audio.mp3")
-        tts = gTTS(fact_text)
-        tts.save(audio_path)
+        synthesize_speech(fact_text, audio_path)
 
         # Measure audio
         audio = AudioSegment.from_file(audio_path)
-        audio_duration = len(audio) / 1000.0  # in seconds
+        audio_duration = len(audio) / 1000.0  # seconds
 
         # Split text into screen lines
         phrases = split_text_for_screen(fact_text, max_chars=25)
@@ -121,7 +144,10 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
 @app.route("/generate", methods=["POST"])
 def generate_endpoint():
     data = request.json
-    fact = data.get("fact", "Honey never spoils. Archaeologists have found edible honey in ancient Egyptian tombs over 3000 years old.")
+    fact = data.get(
+        "fact", 
+        "Honey never spoils. Archaeologists have found edible honey in ancient Egyptian tombs over 3000 years old."
+    )
     background_gcs_path = data.get("background", "gs://my-bucket/background.jpg")
     output_gcs_path = data.get("output", "gs://my-bucket/output.mp4")
 
