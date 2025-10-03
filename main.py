@@ -1,24 +1,20 @@
 import os
+import textwrap
 import subprocess
 from flask import Flask, jsonify
 from google.cloud import storage, texttospeech
 from PIL import Image, ImageDraw, ImageFont
+from mutagen.mp3 import MP3
 
 app = Flask(__name__)
 
 # CONFIG
-PROJECT_ID = "trivia-machine-472207"
-REGION = "asia-southeast1"
 OUTPUT_BUCKET = os.getenv("OUTPUT_BUCKET", "trivia-videos-output")
 
-# Minimal Fact + Paths
 FACT = "Honey never spoils. Archaeologists have found edible honey in ancient Egyptian tombs over 3000 years old."
 BACKGROUND_GCS_PATH = f"gs://{OUTPUT_BUCKET}/background.jpg"
 OUTPUT_GCS_PATH = f"gs://{OUTPUT_BUCKET}/output.mp4"
 
-# ---------------------------
-# Video Creation
-# ---------------------------
 def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: str):
     storage_client = storage.Client()
 
@@ -29,103 +25,62 @@ def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: st
     tmp_bg = "/tmp/background.jpg"
     bg_blob.download_to_filename(tmp_bg)
 
-    # --- Load background image ---
-    img = Image.open(tmp_bg).convert("RGB")
-    font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-    max_width = img.width * 0.8  # 80% width for one line
-    max_height = img.height * 0.7  # optional max height if needed
-
-    # --- Prepare phrases to fit width ---
-    font_size = 60
-    font = ImageFont.truetype(font_path, font_size)
-    draw = ImageDraw.Draw(img)
-
-    words = fact.split()
-    phrases = []
-    temp_phrase = ""
-    for word in words:
-        test_phrase = (temp_phrase + " " + word).strip()
-        w, _ = draw.textbbox((0, 0), test_phrase, font=font)[2:4]
-        if w > max_width:
-            if temp_phrase:
-                phrases.append(temp_phrase)
-            temp_phrase = word
-        else:
-            temp_phrase = test_phrase
-    if temp_phrase:
-        phrases.append(temp_phrase)
-
-    # --- Generate TTS audio for each phrase ---
+    # --- Synthesize continuous TTS ---
     tts_client = texttospeech.TextToSpeechClient()
-    audio_files = []
+    synthesis_input = texttospeech.SynthesisInput(text=fact)
+    voice = texttospeech.VoiceSelectionParams(language_code="en-US", name="en-US-Neural2-C")
+    audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
+    response = tts_client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
+    tmp_audio = "/tmp/audio.mp3"
+    with open(tmp_audio, "wb") as f:
+        f.write(response.audio_content)
+
+    # --- Split text into phrases (~4 words each) ---
+    words = fact.split()
+    phrase_len = 4
+    phrases = [' '.join(words[i:i+phrase_len]) for i in range(0, len(words), phrase_len)]
+
+    # --- Measure audio duration ---
+    audio = MP3(tmp_audio)
+    total_audio_duration = audio.info.length
+    duration_per_phrase = total_audio_duration / len(phrases)
+
+    # --- Build FFmpeg drawtext filters ---
+    font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+    filters = []
     for i, phrase in enumerate(phrases):
-        synthesis_input = texttospeech.SynthesisInput(text=phrase)
-        voice = texttospeech.VoiceSelectionParams(language_code="en-US", name="en-US-Neural2-C")
-        audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
-        response = tts_client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
-        tmp_audio = f"/tmp/audio_{i}.mp3"
-        with open(tmp_audio, "wb") as f:
-            f.write(response.audio_content)
-        audio_files.append(tmp_audio)
+        start = i * duration_per_phrase
+        end = (i+1) * duration_per_phrase
+        # drawtext filter with enable between start/end
+        filters.append(
+            f"drawtext=fontfile={font_path}:text='{phrase}':fontcolor=white:fontsize=60:"
+            f"x=(w-text_w)/2:y=(h-text_h)/2:enable='between(t,{start},{end})'"
+        )
+    filter_complex = ",".join(filters)
 
-    # --- Create a video segment for each phrase ---
-    tmp_video_files = []
-    for i, phrase in enumerate(phrases):
-        frame = img.copy()
-        draw_frame = ImageDraw.Draw(frame)
-        bbox = draw_frame.textbbox((0, 0), phrase, font=font)
-        text_w = bbox[2] - bbox[0]
-        text_h = bbox[3] - bbox[1]
-        x = (img.width - text_w) / 2
-        y = (img.height - text_h) / 2
-        draw_frame.text((x, y), phrase, font=font, fill="white")
-        tmp_img_file = f"/tmp/frame_{i}.jpg"
-        frame.save(tmp_img_file)
-
-        tmp_out = f"/tmp/output_{i}.mp4"
-        ffmpeg_cmd = [
-            "ffmpeg", "-y",
-            "-loop", "1",
-            "-i", tmp_img_file,
-            "-i", audio_files[i],
-            "-c:v", "libx264",
-            "-tune", "stillimage",
-            "-c:a", "aac",
-            "-shortest",
-            "-pix_fmt", "yuv420p",
-            "-vf", "scale=720:1280",
-            tmp_out
-        ]
-        subprocess.run(ffmpeg_cmd, check=True)
-        tmp_video_files.append(tmp_out)
-
-    # --- Concatenate all video segments ---
-    concat_file = "/tmp/concat.txt"
-    with open(concat_file, "w") as f:
-        for vid in tmp_video_files:
-            f.write(f"file '{vid}'\n")
-    tmp_out_final = "/tmp/output.mp4"
-    ffmpeg_concat_cmd = [
+    tmp_out = "/tmp/output.mp4"
+    ffmpeg_cmd = [
         "ffmpeg", "-y",
-        "-f", "concat",
-        "-safe", "0",
-        "-i", concat_file,
-        "-c", "copy",
-        tmp_out_final
+        "-loop", "1", "-i", tmp_bg,
+        "-i", tmp_audio,
+        "-c:v", "libx264",
+        "-tune", "stillimage",
+        "-c:a", "aac",
+        "-pix_fmt", "yuv420p",
+        "-shortest",
+        "-vf", filter_complex,
+        tmp_out
     ]
-    subprocess.run(ffmpeg_concat_cmd, check=True)
+    subprocess.run(ffmpeg_cmd, check=True)
 
     # --- Upload to GCS ---
     out_bucket_name, out_blob_name = output_gcs_path.replace("gs://", "").split("/", 1)
     out_bucket = storage_client.bucket(out_bucket_name)
     out_blob = out_bucket.blob(out_blob_name)
-    out_blob.upload_from_filename(tmp_out_final)
+    out_blob.upload_from_filename(tmp_out)
 
     return output_gcs_path
 
-# ---------------------------
-# HTTP Endpoint
-# ---------------------------
 @app.route("/generate", methods=["POST"])
 def generate_endpoint():
     video_path = create_trivia_video(FACT, BACKGROUND_GCS_PATH, OUTPUT_GCS_PATH)
