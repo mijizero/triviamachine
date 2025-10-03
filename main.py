@@ -143,9 +143,11 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
 
 @app.route("/generate", methods=["POST"])
 def generate_endpoint():
-    data = request.json
+    # Allow empty POST (e.g. from Cloud Scheduler)
+    data = request.get_json(silent=True) or {}
+
     fact = data.get(
-        "fact", 
+        "fact",
         "Honey never spoils. Archaeologists have found edible honey in ancient Egyptian tombs over 3000 years old."
     )
     background_gcs_path = data.get("background", "gs://my-bucket/background.jpg")
@@ -153,9 +155,13 @@ def generate_endpoint():
 
     try:
         video_url = create_trivia_video(fact, background_gcs_path, output_gcs_path)
-        return jsonify({"video_url": video_url})
+        return jsonify({
+            "status": "ok",
+            "fact": fact,
+            "video_url": video_url
+        })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 if __name__ == "__main__":
