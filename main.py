@@ -157,7 +157,7 @@ def generate_endpoint():
         "Honey never spoils. Archaeologists have found edible honey in ancient Egyptian tombs over 3000 years old."
     )
     background_gcs_path = data.get("background", "gs://my-bucket/background.jpg")
-    output_gcs_path = data.get("output", "gs://my-bucket/output.mp4")
+    output_gcs_path = data.get("output", "gs://trivia-vidoes-output/output.mp4")
 
     try:
         video_url = create_trivia_video(fact, background_gcs_path, output_gcs_path)
