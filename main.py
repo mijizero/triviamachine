@@ -1,8 +1,8 @@
 import os
+import textwrap
 import subprocess
 from flask import Flask, jsonify
 from google.cloud import storage, texttospeech
-from mutagen.mp3 import MP3
 from PIL import Image, ImageDraw, ImageFont
 
 app = Flask(__name__)
@@ -32,7 +32,7 @@ def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: st
     tmp_bg = "/tmp/background.jpg"
     bg_blob.download_to_filename(tmp_bg)
 
-    # --- Synthesize TTS (full fact) ---
+    # --- Synthesize TTS ---
     tts_client = texttospeech.TextToSpeechClient()
     synthesis_input = texttospeech.SynthesisInput(text=fact)
     voice = texttospeech.VoiceSelectionParams(language_code="en-US", name="en-US-Neural2-C")
@@ -42,45 +42,47 @@ def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: st
     with open(tmp_audio, "wb") as f:
         f.write(response.audio_content)
 
-    # --- Prepare image for text measurement ---
+    # --- Prepare text phrases ---
     img = Image.open(tmp_bg).convert("RGB")
     draw = ImageDraw.Draw(img)
     font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
     font_size = 60
     font = ImageFont.truetype(font_path, font_size)
-    max_text_width = img.width * 0.8  # 80% of screen width
 
-    # --- Dynamically split fact into lines that fit 80% width ---
+    max_width = img.width * 0.8  # 80% of width
     words = fact.split()
-    lines = []
-    current_line = ""
+    phrases = []
+    current_phrase = []
+
     for word in words:
-        test_line = f"{current_line} {word}".strip()
-        bbox = draw.textbbox((0, 0), test_line, font=font)
+        test_phrase = " ".join(current_phrase + [word])
+        bbox = draw.textbbox((0, 0), test_phrase, font=font)
         line_width = bbox[2] - bbox[0]
-        if line_width <= max_text_width:
-            current_line = test_line
+        if line_width <= max_width:
+            current_phrase.append(word)
         else:
-            lines.append(current_line)
-            current_line = word
-    if current_line:
-        lines.append(current_line)
+            if current_phrase:
+                phrases.append(" ".join(current_phrase))
+            current_phrase = [word]
+    if current_phrase:
+        phrases.append(" ".join(current_phrase))
 
-    # --- Measure audio duration for each line ---
-    audio = MP3(tmp_audio)
-    total_duration = audio.info.length
-    line_duration = total_duration / len(lines)
+    # --- Calculate timings ---
+    import mutagen
+    from mutagen.mp3 import MP3
+    audio_length = MP3(tmp_audio).info.length
+    per_phrase_time = audio_length / len(phrases)
 
-    # --- Build FFmpeg drawtext filters dynamically ---
-    vf_filters = []
-    for idx, line in enumerate(lines):
-        start = idx * line_duration
-        end = (idx + 1) * line_duration
-        text_escaped = line.replace(":", "\\:").replace("'", "\\'")
-        vf_filters.append(
-            f"drawtext=fontfile={font_path}:text='{text_escaped}':fontcolor=white:fontsize={font_size}:x=(w-text_w)/2:y=(h-text_h)/2:enable='between(t,{start},{end})'"
+    # --- Build FFmpeg drawtext filters ---
+    drawtext_filters = []
+    for i, phrase in enumerate(phrases):
+        start = i * per_phrase_time
+        end = (i + 1) * per_phrase_time
+        drawtext_filters.append(
+            f"drawtext=fontfile={font_path}:text='{phrase}':fontcolor=white:fontsize={font_size}"
+            f":x=(w-text_w)/2:y=(h-text_h)/2:enable='between(t,{start},{end})'"
         )
-    vf_filter_str = ",".join(vf_filters)
+    vf = ",".join(drawtext_filters)
 
     tmp_out = "/tmp/output.mp4"
 
@@ -95,7 +97,7 @@ def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: st
         "-c:a", "aac",
         "-pix_fmt", "yuv420p",
         "-shortest",
-        "-vf", vf_filter_str,
+        "-vf", vf,
         tmp_out
     ]
     subprocess.run(ffmpeg_cmd, check=True)
