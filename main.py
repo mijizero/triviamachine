@@ -1,20 +1,27 @@
 import os
-import textwrap
 import subprocess
 from flask import Flask, jsonify
 from google.cloud import storage, texttospeech
-from PIL import Image, ImageDraw, ImageFont
 from mutagen.mp3 import MP3
+from PIL import Image, ImageDraw, ImageFont
 
 app = Flask(__name__)
 
 # CONFIG
+PROJECT_ID = "trivia-machine-472207"
+REGION = "asia-southeast1"
 OUTPUT_BUCKET = os.getenv("OUTPUT_BUCKET", "trivia-videos-output")
 
+# ---------------------------
+# Minimal Fact + Paths
+# ---------------------------
 FACT = "Honey never spoils. Archaeologists have found edible honey in ancient Egyptian tombs over 3000 years old."
 BACKGROUND_GCS_PATH = f"gs://{OUTPUT_BUCKET}/background.jpg"
 OUTPUT_GCS_PATH = f"gs://{OUTPUT_BUCKET}/output.mp4"
 
+# ---------------------------
+# Video Creation
+# ---------------------------
 def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: str):
     storage_client = storage.Client()
 
@@ -25,7 +32,7 @@ def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: st
     tmp_bg = "/tmp/background.jpg"
     bg_blob.download_to_filename(tmp_bg)
 
-    # --- Synthesize continuous TTS ---
+    # --- Synthesize TTS (full fact) ---
     tts_client = texttospeech.TextToSpeechClient()
     synthesis_input = texttospeech.SynthesisInput(text=fact)
     voice = texttospeech.VoiceSelectionParams(language_code="en-US", name="en-US-Neural2-C")
@@ -35,40 +42,60 @@ def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: st
     with open(tmp_audio, "wb") as f:
         f.write(response.audio_content)
 
-    # --- Split text into phrases (~4 words each) ---
-    words = fact.split()
-    phrase_len = 4
-    phrases = [' '.join(words[i:i+phrase_len]) for i in range(0, len(words), phrase_len)]
-
-    # --- Measure audio duration ---
-    audio = MP3(tmp_audio)
-    total_audio_duration = audio.info.length
-    duration_per_phrase = total_audio_duration / len(phrases)
-
-    # --- Build FFmpeg drawtext filters ---
+    # --- Prepare image for text measurement ---
+    img = Image.open(tmp_bg).convert("RGB")
+    draw = ImageDraw.Draw(img)
     font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-    filters = []
-    for i, phrase in enumerate(phrases):
-        start = i * duration_per_phrase
-        end = (i+1) * duration_per_phrase
-        # drawtext filter with enable between start/end
-        filters.append(
-            f"drawtext=fontfile={font_path}:text='{phrase}':fontcolor=white:fontsize=60:"
-            f"x=(w-text_w)/2:y=(h-text_h)/2:enable='between(t,{start},{end})'"
+    font_size = 60
+    font = ImageFont.truetype(font_path, font_size)
+    max_text_width = img.width * 0.8  # 80% of screen width
+
+    # --- Dynamically split fact into lines that fit 80% width ---
+    words = fact.split()
+    lines = []
+    current_line = ""
+    for word in words:
+        test_line = f"{current_line} {word}".strip()
+        bbox = draw.textbbox((0, 0), test_line, font=font)
+        line_width = bbox[2] - bbox[0]
+        if line_width <= max_text_width:
+            current_line = test_line
+        else:
+            lines.append(current_line)
+            current_line = word
+    if current_line:
+        lines.append(current_line)
+
+    # --- Measure audio duration for each line ---
+    audio = MP3(tmp_audio)
+    total_duration = audio.info.length
+    line_duration = total_duration / len(lines)
+
+    # --- Build FFmpeg drawtext filters dynamically ---
+    vf_filters = []
+    for idx, line in enumerate(lines):
+        start = idx * line_duration
+        end = (idx + 1) * line_duration
+        text_escaped = line.replace(":", "\\:").replace("'", "\\'")
+        vf_filters.append(
+            f"drawtext=fontfile={font_path}:text='{text_escaped}':fontcolor=white:fontsize={font_size}:x=(w-text_w)/2:y=(h-text_h)/2:enable='between(t,{start},{end})'"
         )
-    filter_complex = ",".join(filters)
+    vf_filter_str = ",".join(vf_filters)
 
     tmp_out = "/tmp/output.mp4"
+
+    # --- FFmpeg combine ---
     ffmpeg_cmd = [
         "ffmpeg", "-y",
-        "-loop", "1", "-i", tmp_bg,
+        "-loop", "1",
+        "-i", tmp_bg,
         "-i", tmp_audio,
         "-c:v", "libx264",
         "-tune", "stillimage",
         "-c:a", "aac",
         "-pix_fmt", "yuv420p",
         "-shortest",
-        "-vf", filter_complex,
+        "-vf", vf_filter_str,
         tmp_out
     ]
     subprocess.run(ffmpeg_cmd, check=True)
@@ -81,6 +108,9 @@ def create_trivia_video(fact: str, background_gcs_path: str, output_gcs_path: st
 
     return output_gcs_path
 
+# ---------------------------
+# HTTP Endpoint
+# ---------------------------
 @app.route("/generate", methods=["POST"])
 def generate_endpoint():
     video_path = create_trivia_video(FACT, BACKGROUND_GCS_PATH, OUTPUT_GCS_PATH)
