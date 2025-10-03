@@ -85,27 +85,30 @@ def synthesize_speech(text, output_path):
 # -------------------------------
 # Core: Create Video
 # -------------------------------
-
 def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
     with tempfile.TemporaryDirectory() as tmpdir:
         # Download background
         bg_path = os.path.join(tmpdir, "background.jpg")
-        download_from_gcs(background_gcs_path, bg_path)
+        bucket_name, blob_path = background_gcs_path.replace("gs://", "").split("/", 1)
+        client = storage.Client()
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(blob_path)
+        blob.download_to_filename(bg_path)
 
         # TTS generation
         audio_path = os.path.join(tmpdir, "audio.mp3")
-        synthesize_speech(fact_text, audio_path)
+        tts = gTTS(fact_text)
+        tts.save(audio_path)
 
         # Measure audio
         audio = AudioSegment.from_file(audio_path)
-        audio_duration = len(audio) / 1000.0  # in seconds
+        audio_duration = len(audio) / 1000.0
 
         # Split text into screen lines
         phrases = split_text_for_screen(fact_text, max_chars=25)
         phrase_duration = audio_duration / len(phrases)
 
-        # Build FFmpeg drawtext filters
-        font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+        # Build FFmpeg drawtext filters (use system font instead of fontfile)
         font_size = 60
         drawtext_filters = []
 
@@ -115,7 +118,7 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
             end = round((i + 1) * phrase_duration, 2)
 
             filter_str = (
-                f"drawtext=fontfile={font_path}:"
+                f"drawtext=font=sans:"
                 f"text='{phrase_safe}':"
                 f"fontcolor=white:fontsize={font_size}:"
                 f"x=(w-text_w)/2:y=(h-text_h)/2:"
