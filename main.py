@@ -22,12 +22,9 @@ def escape_ffmpeg_text(text: str) -> str:
     return text
 
 def split_text_for_screen(text: str, max_chars=25):
-    """
-    Split text into chunks that fit on screen lines.
-    """
+    """Split text into chunks that fit on screen lines."""
     words = text.split()
-    lines = []
-    current = []
+    lines, current = [], []
 
     for word in words:
         test_line = " ".join(current + [word])
@@ -89,18 +86,13 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
     with tempfile.TemporaryDirectory() as tmpdir:
         # Download background
         bg_path = os.path.join(tmpdir, "background.jpg")
-        bucket_name, blob_path = background_gcs_path.replace("gs://", "").split("/", 1)
-        client = storage.Client()
-        bucket = client.bucket(bucket_name)
-        blob = bucket.blob(blob_path)
-        blob.download_to_filename(bg_path)
+        download_from_gcs(background_gcs_path, bg_path)
 
-        # TTS generation
+        # TTS generation (Neural2 voice)
         audio_path = os.path.join(tmpdir, "audio.mp3")
-        tts = gTTS(fact_text)
-        tts.save(audio_path)
+        synthesize_speech(fact_text, audio_path)
 
-        # Measure audio
+        # Measure audio duration
         audio = AudioSegment.from_file(audio_path)
         audio_duration = len(audio) / 1000.0
 
@@ -108,7 +100,7 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
         phrases = split_text_for_screen(fact_text, max_chars=25)
         phrase_duration = audio_duration / len(phrases)
 
-        # Build FFmpeg drawtext filters (use system font instead of fontfile)
+        # Build FFmpeg drawtext filters (system font)
         font_size = 60
         drawtext_filters = []
 
@@ -152,7 +144,6 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
 
 @app.route("/generate", methods=["POST"])
 def generate_endpoint():
-    # Allow empty POST (e.g. from Cloud Scheduler)
     data = request.get_json(silent=True) or {}
 
     fact = data.get(
@@ -164,10 +155,10 @@ def generate_endpoint():
 
     try:
         video_url = create_trivia_video(fact, background_gcs_path, output_gcs_path)
-        print(f"✅ Generated video for fact: {fact}")  # Log to Cloud Run
+        print(f"✅ Generated video for fact: {fact}")
         return jsonify({"status": "ok", "fact": fact, "video_url": video_url})
     except Exception as e:
-        print(f"❌ Error: {e}")  # Log to Cloud Run
+        print(f"❌ Error: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
