@@ -69,7 +69,7 @@ import os
 from google.cloud import storage
 
 def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
-    """Create trivia video with continuous TTS and page-by-page text display."""
+    """Create trivia video with continuous TTS and gold text with black border."""
     with tempfile.TemporaryDirectory() as tmpdir:
         # Download background
         bg_path = os.path.join(tmpdir, "background.jpg")
@@ -91,11 +91,11 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
 
         # Font setup
         font_path = "Roboto-Regular.ttf"
-        font_size = 25
+        font_size = 45
         font = ImageFont.truetype(font_path, font_size)
         max_width = img.width * 0.8  # 80% screen width
 
-        # Split text into pages (approx 4–5 words per page)
+        # Split text into pages (approx 4 words per page)
         words = fact_text.split()
         words_per_page = 4
         pages = [" ".join(words[i:i+words_per_page]) for i in range(0, len(words), words_per_page)]
@@ -103,7 +103,7 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
         page_duration = audio_duration / num_pages
 
         clips = []
-        for page in pages:
+        for idx, page in enumerate(pages):
             # Create copy of background for this page
             img_page = img.copy()
             draw_page = ImageDraw.Draw(img_page)
@@ -114,9 +114,18 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
             text_height = bbox[3] - bbox[1]
             x = (img_page.width - text_width) / 2
             y = (img_page.height - text_height) / 2
-            draw_page.text((x, y), page, font=font, fill="white")
 
-            annotated_path = os.path.join(tmpdir, f"page_{pages.index(page)}.jpg")
+            # Draw gold/yellow text with thick black border
+            draw_page.text(
+                (x, y),
+                page,
+                font=font,
+                fill="#FFD700",          # Gold color
+                stroke_width=3,          # Thickness of black outline
+                stroke_fill="black"      # Outline color
+            )
+
+            annotated_path = os.path.join(tmpdir, f"page_{idx}.jpg")
             img_page.save(annotated_path)
 
             clip = ImageClip(annotated_path, duration=page_duration)
@@ -135,6 +144,7 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
         blob = bucket.blob(blob_path.replace("background.jpg", "output.mp4"))
         blob.upload_from_filename(output_path)
         return f"https://storage.googleapis.com/{bucket_name}/{blob.name}"
+        
 # -------------------------------
 # Flask Endpoint
 # -------------------------------
