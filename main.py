@@ -83,13 +83,15 @@ def synthesize_speech(text, output_path):
 # -------------------------------
 # Core: Create Video
 # -------------------------------
-def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
-    with tempfile.TemporaryDirectory() as tmpdir:
-        bg_path = os.path.join(tmpdir, "background.jpg")
-        audio_path = os.path.join(tmpdir, "audio.mp3")
-        output_path = os.path.join(tmpdir, "output.mp4")
+from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip, TextClip
 
+def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
+    import tempfile
+    from google.cloud import storage
+
+    with tempfile.TemporaryDirectory() as tmpdir:
         # Download background
+        bg_path = f"{tmpdir}/background.jpg"
         bucket_name, blob_path = background_gcs_path.replace("gs://", "").split("/", 1)
         client = storage.Client()
         bucket = client.bucket(bucket_name)
@@ -97,50 +99,46 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
         blob.download_to_filename(bg_path)
 
         # TTS generation
+        audio_path = f"{tmpdir}/audio.mp3"
         synthesize_speech(fact_text, audio_path)
+        audio_clip = AudioFileClip(audio_path)
+        audio_duration = audio_clip.duration
 
-        # Audio duration
-        audio = AudioSegment.from_file(audio_path)
-        audio_duration = len(audio) / 1000.0
-
-        # Split text into phrases
+        # Split text for screen
         phrases = split_text_for_screen(fact_text, max_chars=25)
         phrase_duration = audio_duration / len(phrases)
 
-        font_size = 60
-        font_path = "/app/Roboto-Regular.ttf"  # absolute path in Docker
+        # Load background as video
+        video_clip = ImageClip(bg_path).set_duration(audio_duration)
 
-        drawtext_filters = []
+        # Create text clips
+        text_clips = []
+        font_path = "Roboto-Regular.ttf"  # Dockerfile ensures this is in /app
+        fontsize = 60
         for i, phrase in enumerate(phrases):
-            phrase_safe = phrase.replace("'", r"\'")
-            start = round(i * phrase_duration, 2)
-            end = round((i + 1) * phrase_duration, 2)
-            filter_str = (
-                f"drawtext=fontfile={font_path}:"
-                f"text='{phrase_safe}':"
-                f"fontcolor=white:fontsize={font_size}:"
-                f"x=(w-text_w)/2:y=(h-text_h)/2:"
-                f"enable='between(t,{start},{end})'"
-            )
-            drawtext_filters.append(filter_str)
+            start = i * phrase_duration
+            end = (i + 1) * phrase_duration
+            txt_clip = (TextClip(phrase, font=font_path, fontsize=fontsize, color='white')
+                        .set_position('center')
+                        .set_start(start)
+                        .set_end(end))
+            text_clips.append(txt_clip)
 
-        filter_complex = ",".join(drawtext_filters)
+        # Composite video with text
+        final_clip = CompositeVideoClip([video_clip, *text_clips]).set_audio(audio_clip)
 
-        ffmpeg_cmd = [
-            "ffmpeg", "-y",
-            "-loop", "1", "-i", bg_path,
-            "-i", audio_path,
-            "-c:v", "libx264", "-tune", "stillimage",
-            "-c:a", "aac", "-pix_fmt", "yuv420p",
-            "-shortest",
-            "-vf", filter_complex,
-            output_path
-        ]
+        # Output video
+        output_path = f"{tmpdir}/output.mp4"
+        final_clip.write_videofile(
+            output_path,
+            fps=24,
+            codec='libx264',
+            audio_codec='aac',
+            temp_audiofile=f"{tmpdir}/temp-audio.m4a",
+            remove_temp=True
+        )
 
-        print("Running FFmpeg command:")
-        print(" ".join(ffmpeg_cmd))
-
-        subprocess.run(ffmpeg_cmd, check=True)
+        # Upload to GCS
         return upload_to_gcs(output_path, output_gcs_path)
 
 # -------------------------------
