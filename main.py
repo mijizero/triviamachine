@@ -70,7 +70,7 @@ def split_text_into_pages(text, draw, font, max_width_ratio=0.8, img_width=1920)
 # Core: Create Video
 # -------------------------------
 def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
-    """Create trivia video with continuous TTS and gold text with black border."""
+    """Create trivia video with continuous TTS and gold text with black border, synced per page."""
     with tempfile.TemporaryDirectory() as tmpdir:
         # Download background
         bg_path = os.path.join(tmpdir, "background.jpg")
@@ -93,17 +93,17 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
         font_path = "Roboto-Regular.ttf"
         font_size = 25
         font = ImageFont.truetype(font_path, font_size)
+        max_width = img.width * 0.8  # 80% screen width
 
-        # Split text into pages (fit 80% width, ~4-5 words per page)
+        # Split text into pages (~4-5 words per page, fits max width)
         draw = ImageDraw.Draw(img)
-        max_width = img.width * 0.8
         words = fact_text.split()
         pages = []
         current_line = []
         for word in words:
             test_line = " ".join(current_line + [word])
-            bbox = draw.textbbox((0,0), test_line, font=font)
-            if bbox[2] - bbox[0] <= max_width:
+            bbox = draw.textbbox((0, 0), test_line, font=font)
+            if (bbox[2] - bbox[0]) <= max_width:
                 current_line.append(word)
             else:
                 pages.append(" ".join(current_line))
@@ -111,18 +111,24 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
         if current_line:
             pages.append(" ".join(current_line))
 
-        # Calculate page durations proportionally to number of words
         total_words = len(words)
-        page_durations = [audio_duration * (len(p.split()) / total_words) for p in pages]
-
         clips = []
-        for idx, (page, duration) in enumerate(zip(pages, page_durations)):
+        word_index = 0
+
+        for page in pages:
+            page_word_count = len(page.split())
+            # Duration proportional to words
+            page_duration = audio_duration * (page_word_count / total_words)
+            # Slight offset to show text before TTS hits it
+            offset = 0.2
+            page_duration += offset
+
             # Create copy of background for this page
             img_page = img.copy()
             draw_page = ImageDraw.Draw(img_page)
 
             # Center text vertically
-            bbox = draw_page.textbbox((0,0), page, font=font)
+            bbox = draw_page.textbbox((0, 0), page, font=font)
             text_width = bbox[2] - bbox[0]
             text_height = bbox[3] - bbox[1]
             x = (img_page.width - text_width) / 2
@@ -133,18 +139,19 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
                 (x, y),
                 page,
                 font=font,
-                fill="#FFD700",          # Gold color
-                stroke_width=3,          # Thickness of black outline
-                stroke_fill="black"      # Outline color
+                fill="#FFD700",       # Gold color
+                stroke_width=3,       # Thickness of black outline
+                stroke_fill="black"   # Outline color
             )
 
-            annotated_path = os.path.join(tmpdir, f"page_{idx}.jpg")
+            annotated_path = os.path.join(tmpdir, f"page_{word_index}.jpg")
             img_page.save(annotated_path)
 
-            clip = ImageClip(annotated_path, duration=duration)
+            clip = ImageClip(annotated_path, duration=page_duration)
             clips.append(clip)
+            word_index += 1
 
-        # Concatenate page clips
+        # Concatenate page clips and set continuous audio
         video_clip = concatenate_videoclips(clips)
         video_clip = video_clip.set_audio(audio_clip)
 
