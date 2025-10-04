@@ -19,8 +19,8 @@ RUN apt-get update && apt-get install -y \
     zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Verify font availability (debugging only, can be removed later)
-RUN fc-list | grep DejaVuSans || true
+# Ensure fontconfig can find custom fonts
+RUN fc-cache -f -v
 
 # Set working directory
 WORKDIR /app
@@ -29,6 +29,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --upgrade pip setuptools wheel
 RUN pip install --no-cache-dir -r requirements.txt
+# Install MoviePy explicitly if not already in requirements
+RUN pip install moviepy
 
 # Copy app source including credentials.json
 COPY Roboto-Regular.ttf /app/
