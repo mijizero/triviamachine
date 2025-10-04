@@ -107,7 +107,7 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
 
         # Build FFmpeg drawtext filters (use bundled Roboto font)
         font_size = 60
-        font_path = "/Roboto-Regular.ttf"  # font copied in Dockerfile
+        font_path = "/app/Roboto-Regular.ttf"  # font copied in Dockerfile
         drawtext_filters = []
 
         def escape_for_ffmpeg(text: str) -> str:
