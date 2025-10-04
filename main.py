@@ -70,7 +70,7 @@ def split_text_into_pages(text, draw, font, max_width_ratio=0.8, img_width=1920)
 # Core: Create Video
 # -------------------------------
 def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
-    """Create trivia video with TTS-synced gold text pages and proper margins."""
+    """Create trivia video with TTS-synced pages and gold text with black border."""
     with tempfile.TemporaryDirectory() as tmpdir:
         # Download background
         bg_path = os.path.join(tmpdir, "background.jpg")
@@ -88,62 +88,68 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
 
         # Load background image
         img = Image.open(bg_path).convert("RGB")
+        draw = ImageDraw.Draw(img)
 
         # Font setup
         font_path = "Roboto-Regular.ttf"
         font_size = 25
         font = ImageFont.truetype(font_path, font_size)
-        max_width = img.width * 0.8  # 80% screen width
-        x_margin = img.width * 0.1   # 10% left/right margin
 
-        # Split text into pages
+        # Split text into pages that fit 80% width
+        pages = split_text_pages(draw, fact_text, font, img.width, max_width_ratio=0.8)
+        total_words = len(fact_text.split())
+        total_pages = len(pages)
+
+        # Calculate per-page durations proportional to number of words
+        page_durations = []
+        word_idx = 0
         words = fact_text.split()
-        words_per_page = 4
-        pages = [" ".join(words[i:i+words_per_page]) for i in range(0, len(words), words_per_page)]
-
-        # Compute per-page start times with small offset
-        total_words = len(words)
-        cumulative_words = 0
-        clips = []
-
         for page in pages:
-            page_words = len(page.split())
-            # start slightly earlier to reduce lag
-            start_time = max(0, ((cumulative_words / total_words) * audio_duration) - 0.8)
-            duration = (page_words / total_words) * audio_duration
-            cumulative_words += page_words
+            num_words = len(page.split())
+            duration = (num_words / total_words) * audio_duration
+            page_durations.append(duration)
+            word_idx += num_words
 
-            # Create page image
+        # Adjust last page duration to match audio exactly
+        page_start_times = [0.0]
+        for i in range(1, total_pages):
+            page_start_times.append(page_start_times[i-1] + page_durations[i-1])
+        page_durations[-1] = audio_duration - page_start_times[-1]
+
+        # Create video clips for each page
+        clips = []
+        x_margin = img.width * 0.1  # 10% margin on left/right
+        max_width = img.width * 0.8
+
+        for idx, page in enumerate(pages):
             img_page = img.copy()
-            draw = ImageDraw.Draw(img_page)
+            draw_page = ImageDraw.Draw(img_page)
 
-            # Fit text within 80% width
-            bbox = draw.textbbox((0,0), page, font=font)
+            # Center text within 80% width
+            bbox = draw_page.textbbox((0,0), page, font=font)
             text_width = bbox[2] - bbox[0]
             text_height = bbox[3] - bbox[1]
-
-            # Center text horizontally with margins
-            x = x_margin + (max_width - text_width) / 2
-            y = (img_page.height - text_height) / 2
+            x = x_margin + (max_width - text_width)/2
+            y = (img_page.height - text_height)/2
 
             # Draw gold text with thick black border
-            draw.text(
+            draw_page.text(
                 (x, y),
                 page,
                 font=font,
-                fill="#FFD700",
+                fill="#FFD700",       # Gold
                 stroke_width=3,
                 stroke_fill="black"
             )
 
-            annotated_path = os.path.join(tmpdir, f"page_{cumulative_words}.jpg")
+            annotated_path = os.path.join(tmpdir, f"page_{idx}.jpg")
             img_page.save(annotated_path)
 
-            clip = ImageClip(annotated_path).set_start(start_time).set_duration(duration)
+            clip = ImageClip(annotated_path, duration=page_durations[idx])
             clips.append(clip)
 
-        # Stack all page clips
-        video_clip = concatenate_videoclips(clips, method="compose")
+        # Concatenate page clips
+        video_clip = concatenate_videoclips(clips)
         video_clip = video_clip.set_audio(audio_clip)
 
         # Write final video
@@ -151,6 +157,7 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
         video_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac")
 
         # Upload to GCS
+        bucket = client.bucket(bucket_name)
         blob = bucket.blob(blob_path.replace("background.jpg", "output.mp4"))
         blob.upload_from_filename(output_path)
         return f"https://storage.googleapis.com/{bucket_name}/{blob.name}"
