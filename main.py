@@ -83,62 +83,73 @@ def synthesize_speech(text, output_path):
 # -------------------------------
 # Core: Create Video
 # -------------------------------
-from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip, TextClip
-
 def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
+    """
+    Create a trivia video with background image, TTS audio, and text overlay.
+    Uses MoviePy with PIL-based TextClip (no ImageMagick).
+    """
     import tempfile
+    import os
+    from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip, TextClip
     from google.cloud import storage
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Download background
-        bg_path = f"{tmpdir}/background.jpg"
+        # -------------------------------
+        # Download background image
+        # -------------------------------
+        bg_path = os.path.join(tmpdir, "background.jpg")
         bucket_name, blob_path = background_gcs_path.replace("gs://", "").split("/", 1)
         client = storage.Client()
         bucket = client.bucket(bucket_name)
-        blob = bucket.blob(blob_path)
-        blob.download_to_filename(bg_path)
+        bucket.blob(blob_path).download_to_filename(bg_path)
 
-        # TTS generation
-        audio_path = f"{tmpdir}/audio.mp3"
+        # -------------------------------
+        # Generate TTS audio
+        # -------------------------------
+        audio_path = os.path.join(tmpdir, "audio.mp3")
         synthesize_speech(fact_text, audio_path)
+
+        # -------------------------------
+        # Load clips
+        # -------------------------------
         audio_clip = AudioFileClip(audio_path)
-        audio_duration = audio_clip.duration
+        image_clip = ImageClip(bg_path).set_duration(audio_clip.duration)
 
-        # Split text for screen
-        phrases = split_text_for_screen(fact_text, max_chars=25)
-        phrase_duration = audio_duration / len(phrases)
+        # -------------------------------
+        # Add text overlay (PIL, no ImageMagick)
+        # -------------------------------
+        txt_clip = TextClip(
+            fact_text,
+            fontsize=60,
+            font="/app/Roboto-Regular.ttf",
+            color="white",
+            method="caption",
+            size=image_clip.size,  # ensures text wraps within the frame
+        ).set_duration(audio_clip.duration).set_position("center")
 
-        # Load background as video
-        video_clip = ImageClip(bg_path).set_duration(audio_duration)
+        # -------------------------------
+        # Combine clips
+        # -------------------------------
+        final_clip = CompositeVideoClip([image_clip, txt_clip]).set_audio(audio_clip)
 
-        # Create text clips
-        text_clips = []
-        font_path = "Roboto-Regular.ttf"  # Dockerfile ensures this is in /app
-        fontsize = 60
-        for i, phrase in enumerate(phrases):
-            start = i * phrase_duration
-            end = (i + 1) * phrase_duration
-            txt_clip = (TextClip(phrase, font=font_path, fontsize=fontsize, color='white')
-                        .set_position('center')
-                        .set_start(start)
-                        .set_end(end))
-            text_clips.append(txt_clip)
-
-        # Composite video with text
-        final_clip = CompositeVideoClip([video_clip, *text_clips]).set_audio(audio_clip)
-
-        # Output video
-        output_path = f"{tmpdir}/output.mp4"
+        # -------------------------------
+        # Write output video
+        # -------------------------------
+        output_path = os.path.join(tmpdir, "output.mp4")
         final_clip.write_videofile(
             output_path,
             fps=24,
-            codec='libx264',
-            audio_codec='aac',
-            temp_audiofile=f"{tmpdir}/temp-audio.m4a",
-            remove_temp=True
+            codec="libx264",
+            audio_codec="aac",
+            temp_audiofile=os.path.join(tmpdir, "temp-audio.m4a"),
+            remove_temp=True,
+            threads=4,
+            preset="medium"
         )
 
+        # -------------------------------
         # Upload to GCS
+        # -------------------------------
         return upload_to_gcs(output_path, output_gcs_path)
 
 # -------------------------------
