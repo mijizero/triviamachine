@@ -62,7 +62,14 @@ def split_text_into_pages(text, draw, font, max_width_ratio=0.8, img_width=1920)
 # Core: Create Video
 # -------------------------------
 
+from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips
+from PIL import Image, ImageDraw, ImageFont
+import tempfile
+import os
+from google.cloud import storage
+
 def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
+    """Create trivia video with continuous TTS and page-by-page text display."""
     with tempfile.TemporaryDirectory() as tmpdir:
         # Download background
         bg_path = os.path.join(tmpdir, "background.jpg")
@@ -72,52 +79,62 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
         blob = bucket.blob(blob_path)
         blob.download_to_filename(bg_path)
 
-        # Load background image to get dimensions
+        # Generate TTS audio for the whole fact
+        audio_path = os.path.join(tmpdir, "audio.mp3")
+        synthesize_speech(fact_text, audio_path)
+        audio_clip = AudioFileClip(audio_path)
+        audio_duration = audio_clip.duration
+
+        # Load background image
         img = Image.open(bg_path).convert("RGB")
         draw = ImageDraw.Draw(img)
+
+        # Font setup
         font_path = "Roboto-Regular.ttf"
         font_size = 60
         font = ImageFont.truetype(font_path, font_size)
+        max_width = img.width * 0.8  # 80% screen width
 
-        # Split text into pages
-        pages = split_text_into_pages(fact_text, draw, font, img_width=img.width)
+        # Split text into pages (approx 4–5 words per page)
+        words = fact_text.split()
+        words_per_page = 4
+        pages = [" ".join(words[i:i+words_per_page]) for i in range(0, len(words), words_per_page)]
+        num_pages = len(pages)
+        page_duration = audio_duration / num_pages
 
         clips = []
+        for page in pages:
+            # Create copy of background for this page
+            img_page = img.copy()
+            draw_page = ImageDraw.Draw(img_page)
 
-        for i, page_text in enumerate(pages):
-            # Synthesize TTS for this page
-            audio_path = os.path.join(tmpdir, f"audio_{i}.mp3")
-            synthesize_speech(page_text, audio_path)
-            audio_clip = AudioFileClip(audio_path)
-            duration = audio_clip.duration
+            # Center text vertically
+            bbox = draw_page.textbbox((0,0), page, font=font)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+            x = (img_page.width - text_width) / 2
+            y = (img_page.height - text_height) / 2
+            draw_page.text((x, y), page, font=font, fill="white")
 
-            # Create image for this page
-            page_img = img.copy()
-            page_draw = ImageDraw.Draw(page_img)
-            bbox = page_draw.textbbox((0,0), page_text, font=font)
-            w = bbox[2] - bbox[0]
-            h = bbox[3] - bbox[1]
-            x = (page_img.width - w) / 2
-            y = (page_img.height - h) / 2
-            page_draw.text((x, y), page_text, font=font, fill="white")
+            annotated_path = os.path.join(tmpdir, f"page_{pages.index(page)}.jpg")
+            img_page.save(annotated_path)
 
-            # Save annotated image
-            annotated_path = os.path.join(tmpdir, f"annotated_{i}.jpg")
-            page_img.save(annotated_path)
-
-            # Create video clip
-            clip = ImageClip(annotated_path, duration=duration)
-            clip = clip.set_audio(audio_clip)
+            clip = ImageClip(annotated_path, duration=page_duration)
             clips.append(clip)
 
-        # Concatenate all clips
-        final_clip = concatenate_videoclips(clips)
+        # Concatenate page clips
+        video_clip = concatenate_videoclips(clips)
+        video_clip = video_clip.set_audio(audio_clip)
+
+        # Write final video
         output_path = os.path.join(tmpdir, "output.mp4")
-        final_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac")
+        video_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac")
 
         # Upload to GCS
-        return upload_to_gcs(output_path, output_gcs_path)
-
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(blob_path.replace("background.jpg", "output.mp4"))
+        blob.upload_from_filename(output_path)
+        return f"https://storage.googleapis.com/{bucket_name}/{blob.name}"
 # -------------------------------
 # Flask Endpoint
 # -------------------------------
