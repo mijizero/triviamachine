@@ -70,7 +70,7 @@ def split_text_into_pages(text, draw, font, max_width_ratio=0.8, img_width=1920)
 # Core: Create Video
 # -------------------------------
 def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
-    """Create trivia video with TTS-synced gold text pages."""
+    """Create trivia video with TTS-synced gold text pages and proper margins."""
     with tempfile.TemporaryDirectory() as tmpdir:
         # Download background
         bg_path = os.path.join(tmpdir, "background.jpg")
@@ -94,20 +94,22 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
         font_size = 25
         font = ImageFont.truetype(font_path, font_size)
         max_width = img.width * 0.8  # 80% screen width
+        x_margin = img.width * 0.1   # 10% left/right margin
 
         # Split text into pages
         words = fact_text.split()
         words_per_page = 4
         pages = [" ".join(words[i:i+words_per_page]) for i in range(0, len(words), words_per_page)]
 
-        # Compute per-page start times
+        # Compute per-page start times with small offset
         total_words = len(words)
         cumulative_words = 0
         clips = []
 
         for page in pages:
             page_words = len(page.split())
-            start_time = (cumulative_words / total_words) * audio_duration
+            # start slightly earlier to reduce lag
+            start_time = max(0, ((cumulative_words / total_words) * audio_duration) - 0.8)
             duration = (page_words / total_words) * audio_duration
             cumulative_words += page_words
 
@@ -115,11 +117,13 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
             img_page = img.copy()
             draw = ImageDraw.Draw(img_page)
 
-            # Center text
+            # Fit text within 80% width
             bbox = draw.textbbox((0,0), page, font=font)
             text_width = bbox[2] - bbox[0]
             text_height = bbox[3] - bbox[1]
-            x = (img_page.width - text_width) / 2
+
+            # Center text horizontally with margins
+            x = x_margin + (max_width - text_width) / 2
             y = (img_page.height - text_height) / 2
 
             # Draw gold text with thick black border
