@@ -117,21 +117,38 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
 
         # Load background image
         img = Image.open(bg_path).convert("RGB")
-        draw = ImageDraw.Draw(img)
 
         # Font setup
         font_path = "Roboto-Regular.ttf"
-        font_size = 50  # bigger so each page can fit 4-5 words nicely
+        font_size = 25
         font = ImageFont.truetype(font_path, font_size)
+        max_width = img.width * 0.8  # 80% screen width
 
-        # Split text into pages using the helper
-        pages = split_text_pages(draw, fact_text, font, img.width, max_width_ratio=0.8)
+        # Split text into pages fitting 80% width
+        draw = ImageDraw.Draw(img)
+        words = fact_text.split()
+        pages = []
+        current_line = []
+
+        for word in words:
+            test_line = " ".join(current_line + [word])
+            bbox = draw.textbbox((0, 0), test_line, font=font)
+            line_width = bbox[2] - bbox[0]
+            if line_width <= max_width:
+                current_line.append(word)
+            else:
+                pages.append(" ".join(current_line))
+                current_line = [word]
+        if current_line:
+            pages.append(" ".join(current_line))
+
+        # Calculate duration per page with a small offset
         num_pages = len(pages)
-        page_duration = audio_duration / num_pages
+        base_page_duration = audio_duration / num_pages
+        offset = 0.3  # seconds, text appears slightly before audio
 
         clips = []
         for idx, page in enumerate(pages):
-            # Create copy of background for this page
             img_page = img.copy()
             draw_page = ImageDraw.Draw(img_page)
 
@@ -147,18 +164,27 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
                 (x, y),
                 page,
                 font=font,
-                fill="#FFD700",          # Gold color
-                stroke_width=4,          # Thickness of black outline
-                stroke_fill="black"      # Outline color
+                fill="#FFD700",
+                stroke_width=3,
+                stroke_fill="black"
             )
 
             annotated_path = os.path.join(tmpdir, f"page_{idx}.jpg")
             img_page.save(annotated_path)
 
-            clip = ImageClip(annotated_path, duration=page_duration)
+            # Apply offset to make text appear slightly earlier
+            clip_duration = base_page_duration
+            if idx == 0:
+                clip_duration += offset
+            elif idx == num_pages - 1:
+                clip_duration -= offset / 2
+            else:
+                clip_duration += offset / 2
+
+            clip = ImageClip(annotated_path, duration=clip_duration)
             clips.append(clip)
 
-        # Concatenate page clips
+        # Concatenate page clips and attach full TTS audio
         video_clip = concatenate_videoclips(clips)
         video_clip = video_clip.set_audio(audio_clip)
 
