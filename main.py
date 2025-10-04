@@ -106,8 +106,9 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
         phrases = split_text_for_screen(fact_text, max_chars=25)
         phrase_duration = audio_duration / len(phrases)
 
-        # Build FFmpeg drawtext filters (use system font instead of fontfile)
+        # Build FFmpeg drawtext filters (use bundled Roboto font)
         font_size = 60
+        font_path = "/app/Roboto-Regular.ttf"  # font copied in Dockerfile
         drawtext_filters = []
 
         for i, phrase in enumerate(phrases):
@@ -116,7 +117,7 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
             end = round((i + 1) * phrase_duration, 2)
 
             filter_str = (
-                f"drawtext=font=sans:"
+                f"drawtext=fontfile={font_path}:"
                 f"text='{phrase_safe}':"
                 f"fontcolor=white:fontsize={font_size}:"
                 f"x=(w-text_w)/2:y=(h-text_h)/2:"
