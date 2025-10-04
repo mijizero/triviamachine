@@ -36,7 +36,7 @@ def synthesize_speech(text, output_path):
     # Excited / energetic style
     audio_config = texttospeech.AudioConfig(
         audio_encoding=texttospeech.AudioEncoding.MP3,
-        speaking_rate=1.2,  # slightly faster
+        speaking_rate=1.1,  # slightly faster
         pitch=4.0,          # higher pitch
         volume_gain_db=2.0, # slightly louder
         effects_profile_id=["telephony-class-application"]  # optional, can remove
@@ -101,7 +101,7 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
 
         # Font setup
         font_path = "Roboto-Regular.ttf"
-        font_size = 35
+        font_size = 25
         font = ImageFont.truetype(font_path, font_size)
         max_width = img.width * 0.8  # 80% screen width
 
