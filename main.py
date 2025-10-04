@@ -29,7 +29,7 @@ def synthesize_speech(text, output_path):
     voice = texttospeech.VoiceSelectionParams(
         language_code="en-AU",
         name="en-AU-Neural2-D",  # Australian female Neural2
-        ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
+        ssml_gender=texttospeech.SsmlVoiceGender.MALE
     )
 
     audio_config = texttospeech.AudioConfig(
