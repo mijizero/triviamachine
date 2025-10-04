@@ -83,7 +83,10 @@ def synthesize_speech(text, output_path):
 # -------------------------------
 # Core: Create Video
 # -------------------------------
-from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips
+# -------------------------------
+# Core: Create Video
+# -------------------------------
+from moviepy.editor import ImageClip, AudioFileClip
 from PIL import Image, ImageDraw, ImageFont
 import tempfile
 import os
@@ -100,10 +103,9 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
         blob = bucket.blob(blob_path)
         blob.download_to_filename(bg_path)
 
-        # Load audio
+        # Generate audio
         audio_path = os.path.join(tmpdir, "audio.mp3")
-        # Assuming synthesize_speech already writes audio here
-        # synthesize_speech(fact_text, audio_path)
+        synthesize_speech(fact_text, audio_path)  # ensure audio is written here
         audio_clip = AudioFileClip(audio_path)
         audio_duration = audio_clip.duration
 
@@ -158,6 +160,8 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
         blob = bucket.blob(blob_path.replace("background.jpg", "output.mp4"))
         blob.upload_from_filename(output_path)
         return f"https://storage.googleapis.com/{bucket_name}/{blob.name}"
+
+
 
 # -------------------------------
 # Flask Endpoint
