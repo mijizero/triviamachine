@@ -107,18 +107,23 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
 
         # Build FFmpeg drawtext filters (use bundled Roboto font)
         font_size = 60
-        font_path = "/app/Roboto-Regular.ttf"  # font copied in Dockerfile
+        font_path = "Roboto-Regular.ttf"  # font copied in Dockerfile
         drawtext_filters = []
 
         def escape_for_ffmpeg(text: str) -> str:
-            """Escape special characters for FFmpeg drawtext."""
-            text = text.replace(":", r'\:')
-            text = text.replace("'", r"\'")
-            text = text.replace(",", r'\,')
-            text = text.replace("[", r'\[')
-            text = text.replace("]", r'\]')
-            text = text.replace("%", r'\%')
-            text = text.replace("\\", r'\\\\')
+            """Escape special characters safely for FFmpeg drawtext."""
+            replacements = {
+                '\\': r'\\\\',
+                ':': r'\:',
+                "'": r"\'",
+                ',': r'\,',
+                '[': r'\[',
+                ']': r'\]',
+                '%': r'\%',
+                '"': r'\"'
+            }
+            for k, v in replacements.items():
+                text = text.replace(k, v)
             return text
 
         for i, phrase in enumerate(phrases):
@@ -126,12 +131,13 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
             start = round(i * phrase_duration, 2)
             end = round((i + 1) * phrase_duration, 2)
 
+            # Use double quotes and escape text for safety
             filter_str = (
-                f"drawtext=fontfile={font_path}:"
-                f"text='{phrase_safe}':"
-                f"fontcolor=white:fontsize={font_size}:"
-                f"x=(w-text_w)/2:y=(h-text_h)/2:"
-                f"enable='between(t,{start},{end})'"
+                f'drawtext=fontfile={font_path}:'
+                f'text="{phrase_safe}":'
+                f'fontcolor=white:fontsize={font_size}:'
+                f'x=(w-text_w)/2:y=(h-text_h)/2:'
+                f'enable=\'between(t,{start},{end})\''
             )
             drawtext_filters.append(filter_str)
 
