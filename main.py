@@ -150,6 +150,11 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
             output_path
         ]
 
+        # 🔎 Debugging log
+        print("Running FFmpeg command:")
+        print(" ".join(ffmpeg_cmd))
+
+        # Run FFmpeg
         subprocess.run(ffmpeg_cmd, check=True)
 
         # Upload to GCS
