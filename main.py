@@ -85,8 +85,11 @@ def synthesize_speech(text, output_path):
 # -------------------------------
 def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Download background
         bg_path = os.path.join(tmpdir, "background.jpg")
+        audio_path = os.path.join(tmpdir, "audio.mp3")
+        output_path = os.path.join(tmpdir, "output.mp4")
+
+        # Download background
         bucket_name, blob_path = background_gcs_path.replace("gs://", "").split("/", 1)
         client = storage.Client()
         bucket = client.bucket(bucket_name)
@@ -94,57 +97,35 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
         blob.download_to_filename(bg_path)
 
         # TTS generation
-        audio_path = os.path.join(tmpdir, "audio.mp3")
         synthesize_speech(fact_text, audio_path)
 
-        # Measure audio
+        # Audio duration
         audio = AudioSegment.from_file(audio_path)
         audio_duration = len(audio) / 1000.0
 
-        # Split text into screen lines
+        # Split text into phrases
         phrases = split_text_for_screen(fact_text, max_chars=25)
         phrase_duration = audio_duration / len(phrases)
 
-        # Build FFmpeg drawtext filters (use bundled Roboto font)
         font_size = 60
-        font_path = "Roboto-Regular.ttf"  # font copied in Dockerfile
+        font_path = "/app/Roboto-Regular.ttf"  # absolute path in Docker
+
         drawtext_filters = []
-
-        def escape_for_ffmpeg(text: str) -> str:
-            """Escape special characters safely for FFmpeg drawtext."""
-            replacements = {
-                '\\': r'\\\\',
-                ':': r'\:',
-                "'": r"\'",
-                ',': r'\,',
-                '[': r'\[',
-                ']': r'\]',
-                '%': r'\%',
-                '"': r'\"'
-            }
-            for k, v in replacements.items():
-                text = text.replace(k, v)
-            return text
-
         for i, phrase in enumerate(phrases):
-            phrase_safe = escape_for_ffmpeg(phrase)
+            phrase_safe = phrase.replace("'", r"\'")
             start = round(i * phrase_duration, 2)
             end = round((i + 1) * phrase_duration, 2)
-
-            # Use double quotes and escape text for safety
             filter_str = (
-                f'drawtext=fontfile={font_path}:'
-                f'text="{phrase_safe}":'
-                f'fontcolor=white:fontsize={font_size}:'
-                f'x=(w-text_w)/2:y=(h-text_h)/2:'
-                f'enable=\'between(t,{start},{end})\''
+                f"drawtext=fontfile={font_path}:"
+                f"text='{phrase_safe}':"
+                f"fontcolor=white:fontsize={font_size}:"
+                f"x=(w-text_w)/2:y=(h-text_h)/2:"
+                f"enable='between(t,{start},{end})'"
             )
             drawtext_filters.append(filter_str)
 
         filter_complex = ",".join(drawtext_filters)
 
-        # Output video
-        output_path = os.path.join(tmpdir, "output.mp4")
         ffmpeg_cmd = [
             "ffmpeg", "-y",
             "-loop", "1", "-i", bg_path,
@@ -156,14 +137,10 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
             output_path
         ]
 
-        # 🔎 Debugging log
         print("Running FFmpeg command:")
         print(" ".join(ffmpeg_cmd))
 
-        # Run FFmpeg
         subprocess.run(ffmpeg_cmd, check=True)
-
-        # Upload to GCS
         return upload_to_gcs(output_path, output_gcs_path)
 
 # -------------------------------
