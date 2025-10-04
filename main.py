@@ -99,9 +99,17 @@ def split_text_pages(draw, text, font, img_width, max_width_ratio=0.8):
 # Core: Create Video
 # -------------------------------
 def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
-    """Create trivia video with continuous TTS and gold text with black border."""
+    """Create trivia video with TTS-synced text pages (font 25, 80% width)."""
+    import tempfile
+    import os
+    from PIL import Image, ImageDraw, ImageFont
+    from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips
+    from google.cloud import storage
+
     with tempfile.TemporaryDirectory() as tmpdir:
+        # -----------------------------
         # Download background
+        # -----------------------------
         bg_path = os.path.join(tmpdir, "background.jpg")
         bucket_name, blob_path = background_gcs_path.replace("gs://", "").split("/", 1)
         client = storage.Client()
@@ -109,32 +117,35 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
         blob = bucket.blob(blob_path)
         blob.download_to_filename(bg_path)
 
-        # Generate TTS audio for the whole fact
+        # -----------------------------
+        # Generate TTS for the whole fact
+        # -----------------------------
         audio_path = os.path.join(tmpdir, "audio.mp3")
         synthesize_speech(fact_text, audio_path)
         audio_clip = AudioFileClip(audio_path)
-        audio_duration = audio_clip.duration
+        total_duration = audio_clip.duration
 
+        # -----------------------------
         # Load background image
+        # -----------------------------
         img = Image.open(bg_path).convert("RGB")
-
-        # Font setup
+        draw = ImageDraw.Draw(img)
         font_path = "Roboto-Regular.ttf"
         font_size = 25
         font = ImageFont.truetype(font_path, font_size)
-        max_width = img.width * 0.8  # 80% screen width
+        max_width = img.width * 0.8  # 80% of screen width
 
-        # Split text into pages fitting 80% width
-        draw = ImageDraw.Draw(img)
+        # -----------------------------
+        # Split text into pages (width-limited)
+        # -----------------------------
         words = fact_text.split()
         pages = []
         current_line = []
-
         for word in words:
             test_line = " ".join(current_line + [word])
             bbox = draw.textbbox((0, 0), test_line, font=font)
-            line_width = bbox[2] - bbox[0]
-            if line_width <= max_width:
+            text_width = bbox[2] - bbox[0]
+            if text_width <= max_width:
                 current_line.append(word)
             else:
                 pages.append(" ".join(current_line))
@@ -142,18 +153,20 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
         if current_line:
             pages.append(" ".join(current_line))
 
-        # Calculate duration per page with a small offset
-        num_pages = len(pages)
-        base_page_duration = audio_duration / num_pages
-        offset = 0.3  # seconds, text appears slightly before audio
-
+        # -----------------------------
+        # Assign per-page durations proportional to word count
+        # -----------------------------
+        total_words = len(words)
         clips = []
-        for idx, page in enumerate(pages):
+        word_index = 0
+        for page_text in pages:
+            num_words_in_page = len(page_text.split())
+            page_duration = total_duration * num_words_in_page / total_words
+
+            # Create page image
             img_page = img.copy()
             draw_page = ImageDraw.Draw(img_page)
-
-            # Center text vertically
-            bbox = draw_page.textbbox((0, 0), page, font=font)
+            bbox = draw_page.textbbox((0, 0), page_text, font=font)
             text_width = bbox[2] - bbox[0]
             text_height = bbox[3] - bbox[1]
             x = (img_page.width - text_width) / 2
@@ -162,41 +175,39 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
             # Draw gold/yellow text with thick black border
             draw_page.text(
                 (x, y),
-                page,
+                page_text,
                 font=font,
-                fill="#FFD700",
-                stroke_width=3,
+                fill="#FFD700",          # Gold
+                stroke_width=3,          # Black outline
                 stroke_fill="black"
             )
 
-            annotated_path = os.path.join(tmpdir, f"page_{idx}.jpg")
-            img_page.save(annotated_path)
+            page_path = os.path.join(tmpdir, f"page_{word_index}.jpg")
+            img_page.save(page_path)
+            word_index += 1
 
-            # Apply offset to make text appear slightly earlier
-            clip_duration = base_page_duration
-            if idx == 0:
-                clip_duration += offset
-            elif idx == num_pages - 1:
-                clip_duration -= offset / 2
-            else:
-                clip_duration += offset / 2
-
-            clip = ImageClip(annotated_path, duration=clip_duration)
+            # Create ImageClip for this page
+            clip = ImageClip(page_path, duration=page_duration)
             clips.append(clip)
 
-        # Concatenate page clips and attach full TTS audio
+        # -----------------------------
+        # Concatenate clips and set TTS audio
+        # -----------------------------
         video_clip = concatenate_videoclips(clips)
         video_clip = video_clip.set_audio(audio_clip)
 
+        # -----------------------------
         # Write final video
+        # -----------------------------
         output_path = os.path.join(tmpdir, "output.mp4")
         video_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac")
 
+        # -----------------------------
         # Upload to GCS
-        bucket = client.bucket(bucket_name)
-        blob = bucket.blob(blob_path.replace("background.jpg", "output.mp4"))
-        blob.upload_from_filename(output_path)
-        return f"https://storage.googleapis.com/{bucket_name}/{blob.name}"
+        # -----------------------------
+        blob_out = bucket.blob(blob_path.replace("background.jpg", "output.mp4"))
+        blob_out.upload_from_filename(output_path)
+        return f"https://storage.googleapis.com/{bucket_name}/{blob_out.name}"
 
 # -------------------------------
 # Flask Endpoint
