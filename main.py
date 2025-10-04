@@ -83,45 +83,48 @@ def synthesize_speech(text, output_path):
 # -------------------------------
 # Core: Create Video
 # -------------------------------
-def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
-    import tempfile
-    import os
-    from google.cloud import storage
-    from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip
-    from PIL import Image, ImageDraw, ImageFont
+from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips
+from PIL import Image, ImageDraw, ImageFont
+import tempfile
+import os
+from google.cloud import storage
 
+def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
+    """Create a trivia video with centered text using MoviePy + Pillow."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        # -------------------------------
-        # Download background image
-        # -------------------------------
+        # Download background
         bg_path = os.path.join(tmpdir, "background.jpg")
         bucket_name, blob_path = background_gcs_path.replace("gs://", "").split("/", 1)
         client = storage.Client()
         bucket = client.bucket(bucket_name)
-        bucket.blob(blob_path).download_to_filename(bg_path)
+        blob = bucket.blob(blob_path)
+        blob.download_to_filename(bg_path)
 
-        # -------------------------------
-        # Generate TTS audio
-        # -------------------------------
+        # Load audio
         audio_path = os.path.join(tmpdir, "audio.mp3")
-        synthesize_speech(fact_text, audio_path)
+        # Assuming synthesize_speech already writes audio here
+        # synthesize_speech(fact_text, audio_path)
         audio_clip = AudioFileClip(audio_path)
+        audio_duration = audio_clip.duration
 
-        # -------------------------------
-        # Load background and draw text using PIL
-        # -------------------------------
+        # Load background image
         img = Image.open(bg_path).convert("RGB")
         draw = ImageDraw.Draw(img)
-        font = ImageFont.truetype("/app/Roboto-Regular.ttf", 60)
 
-        # Wrap text manually
+        # Load font
+        font_path = "Roboto-Regular.ttf"
+        font_size = 60
+        font = ImageFont.truetype(font_path, font_size)
+
+        # Wrap text to fit screen
         max_width = img.width - 100
         words = fact_text.split()
         lines = []
         line = ""
         for word in words:
             test_line = f"{line} {word}".strip()
-            w, _ = draw.textsize(test_line, font=font)
+            bbox = draw.textbbox((0, 0), test_line, font=font)
+            w = bbox[2] - bbox[0]
             if w <= max_width:
                 line = test_line
             else:
@@ -130,40 +133,31 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
         if line:
             lines.append(line)
 
-        # Draw text centered
-        total_text_height = sum([draw.textsize(l, font=font)[1] for l in lines])
+        # Draw text centered vertically
+        total_text_height = sum([draw.textbbox((0, 0), l, font=font)[3] - draw.textbbox((0, 0), l, font=font)[1] for l in lines])
         current_h = (img.height - total_text_height) // 2
         for line in lines:
-            w, h = draw.textsize(line, font=font)
+            bbox = draw.textbbox((0,0), line, font=font)
+            w = bbox[2] - bbox[0]
+            h = bbox[3] - bbox[1]
             draw.text(((img.width - w) / 2, current_h), line, font=font, fill="white")
             current_h += h
 
-        # Save modified image
-        video_bg_path = os.path.join(tmpdir, "video_bg.jpg")
-        img.save(video_bg_path)
+        # Save annotated image
+        annotated_path = os.path.join(tmpdir, "annotated.jpg")
+        img.save(annotated_path)
 
-        # -------------------------------
-        # Make video
-        # -------------------------------
-        image_clip = ImageClip(video_bg_path).set_duration(audio_clip.duration)
-        final_clip = image_clip.set_audio(audio_clip)
-
+        # Create video clip
+        clip = ImageClip(annotated_path, duration=audio_duration)
+        clip = clip.set_audio(audio_clip)
         output_path = os.path.join(tmpdir, "output.mp4")
-        final_clip.write_videofile(
-            output_path,
-            fps=24,
-            codec="libx264",
-            audio_codec="aac",
-            temp_audiofile=os.path.join(tmpdir, "temp-audio.m4a"),
-            remove_temp=True,
-            threads=4,
-            preset="medium"
-        )
+        clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac")
 
-        # -------------------------------
         # Upload to GCS
-        # -------------------------------
-        return upload_to_gcs(output_path, output_gcs_path)
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(blob_path.replace("background.jpg", "output.mp4"))
+        blob.upload_from_filename(output_path)
+        return f"https://storage.googleapis.com/{bucket_name}/{blob.name}"
 
 # -------------------------------
 # Flask Endpoint
