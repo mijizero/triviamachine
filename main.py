@@ -93,7 +93,7 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
 
         # Font setup
         font_path = "Roboto-Regular.ttf"
-        font_size = 50  # bigger for better visibility
+        font_size = 30  # bigger for better visibility
         font = ImageFont.truetype(font_path, font_size)
 
         # Split text dynamically into pages based on 80% width
