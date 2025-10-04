@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     libjpeg-dev \
     zlib1g-dev \
+    imagemagick \
     && rm -rf /var/lib/apt/lists/*
 
 # Ensure fontconfig can find custom fonts
