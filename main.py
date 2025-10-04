@@ -28,14 +28,14 @@ def synthesize_speech(text, output_path):
 
     voice = texttospeech.VoiceSelectionParams(
         language_code="en-AU",
-        name="en-AU-Neural2-C",  # Australian female Neural2
+        name="en-AU-Neural2-D",  # Australian female Neural2
         ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
     )
 
     audio_config = texttospeech.AudioConfig(
         audio_encoding=texttospeech.AudioEncoding.MP3,
-        speaking_rate=1.1,  # faster for excitement
-        pitch=4.0,          # higher pitch
+        speaking_rate=1.0,  # faster for excitement
+        pitch=2.0,          # higher pitch
         volume_gain_db=2.0
     )
 
