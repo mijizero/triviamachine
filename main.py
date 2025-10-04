@@ -91,7 +91,7 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
 
         # Font setup
         font_path = "Roboto-Regular.ttf"
-        font_size = 60
+        font_size = 40
         font = ImageFont.truetype(font_path, font_size)
         max_width = img.width * 0.8  # 80% screen width
 
