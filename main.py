@@ -21,23 +21,33 @@ def upload_to_gcs(local_path, gcs_path):
     return f"https://storage.googleapis.com/{bucket_name}/{blob_path}"
 
 def synthesize_speech(text, output_path):
-    """Generate speech using Google Cloud TTS."""
+    """Generate speech using Google Cloud Text-to-Speech (Neural2) with excited tone."""
     client = texttospeech.TextToSpeechClient()
+
     synthesis_input = texttospeech.SynthesisInput(text=text)
+
     voice = texttospeech.VoiceSelectionParams(
         language_code="en-US",
-        name="en-US-Neural2-C"
+        name="en-US-Neural2-C",   # Neural2 voice
+        # Some voices support 'expressive' features
+        ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
     )
+
+    # Excited / energetic style
     audio_config = texttospeech.AudioConfig(
         audio_encoding=texttospeech.AudioEncoding.MP3,
-        speaking_rate=1.0,
-        pitch=0.0
+        speaking_rate=1.2,  # slightly faster
+        pitch=4.0,          # higher pitch
+        volume_gain_db=2.0, # slightly louder
+        effects_profile_id=["telephony-class-application"]  # optional, can remove
     )
+
     response = client.synthesize_speech(
         input=synthesis_input, voice=voice, audio_config=audio_config
     )
-    with open(output_path, "wb") as f:
-        f.write(response.audio_content)
+
+    with open(output_path, "wb") as out:
+        out.write(response.audio_content)
 
 def split_text_into_pages(text, draw, font, max_width_ratio=0.8, img_width=1920):
     """Split text into pages that fit 80% width."""
@@ -91,7 +101,7 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
 
         # Font setup
         font_path = "Roboto-Regular.ttf"
-        font_size = 45
+        font_size = 35
         font = ImageFont.truetype(font_path, font_size)
         max_width = img.width * 0.8  # 80% screen width
 
