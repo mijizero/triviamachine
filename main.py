@@ -68,8 +68,8 @@ def split_text_into_pages(text, draw, font, max_width_ratio=0.8, img_width=1920)
 
 def split_text_pages(draw, text, font, img_width, max_width_ratio=0.8):
     """
-    Split a long fact into multiple "pages" that fit within max_width_ratio of the image width.
-    Returns a list of strings, each representing one page.
+    Split text into pages that fit within max_width_ratio of image width.
+    Greedy approach: add words until it exceeds max width, then start a new page.
     """
     max_width = img_width * max_width_ratio
     words = text.split()
@@ -80,13 +80,16 @@ def split_text_pages(draw, text, font, img_width, max_width_ratio=0.8):
         test_line = " ".join(current_line + [word])
         bbox = draw.textbbox((0, 0), test_line, font=font)
         line_width = bbox[2] - bbox[0]
-
-        if line_width <= max_width:
+        # include extra margin for stroke
+        if line_width + 10 <= max_width:  # 10 px buffer for stroke
             current_line.append(word)
         else:
-            # Save the current line as a page
-            pages.append(" ".join(current_line))
-            current_line = [word]
+            # if current_line is empty (word itself too long), force it in
+            if not current_line:
+                pages.append(word)
+            else:
+                pages.append(" ".join(current_line))
+                current_line = [word]
 
     if current_line:
         pages.append(" ".join(current_line))
