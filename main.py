@@ -86,6 +86,9 @@ def synthesize_speech(text, output_path):
 
 def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
     with tempfile.TemporaryDirectory() as tmpdir:
+        # Hardcoded fact variable (simulating dynamic source)
+        fact = fact_text or "Honey never spoils. Archaeologists have found edible honey in ancient Egyptian tombs over 3000 years old."
+
         # Download background
         bg_path = os.path.join(tmpdir, "background.jpg")
         bucket_name, blob_path = background_gcs_path.replace("gs://", "").split("/", 1)
@@ -96,14 +99,14 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
 
         # TTS generation
         audio_path = os.path.join(tmpdir, "audio.mp3")
-        synthesize_speech(fact_text, audio_path)
+        synthesize_speech(fact, audio_path)
 
         # Measure audio
         audio = AudioSegment.from_file(audio_path)
         audio_duration = len(audio) / 1000.0
 
         # Split text into screen lines
-        phrases = split_text_for_screen(fact_text, max_chars=25)
+        phrases = split_text_for_screen(fact, max_chars=25)
         phrase_duration = audio_duration / len(phrases)
 
         # Build FFmpeg drawtext filters (use bundled Roboto font)
