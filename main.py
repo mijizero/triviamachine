@@ -84,14 +84,11 @@ def synthesize_speech(text, output_path):
 # Core: Create Video
 # -------------------------------
 def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
-    """
-    Create a trivia video with background image, TTS audio, and text overlay.
-    Uses MoviePy with PIL-based TextClip (no ImageMagick).
-    """
     import tempfile
     import os
-    from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip, TextClip
     from google.cloud import storage
+    from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip
+    from PIL import Image, ImageDraw, ImageFont
 
     with tempfile.TemporaryDirectory() as tmpdir:
         # -------------------------------
@@ -108,33 +105,49 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
         # -------------------------------
         audio_path = os.path.join(tmpdir, "audio.mp3")
         synthesize_speech(fact_text, audio_path)
-
-        # -------------------------------
-        # Load clips
-        # -------------------------------
         audio_clip = AudioFileClip(audio_path)
-        image_clip = ImageClip(bg_path).set_duration(audio_clip.duration)
 
         # -------------------------------
-        # Add text overlay (PIL, no ImageMagick)
+        # Load background and draw text using PIL
         # -------------------------------
-        txt_clip = TextClip(
-            fact_text,
-            fontsize=60,
-            font="/app/Roboto-Regular.ttf",
-            color="white",
-            method="caption",
-            size=image_clip.size,  # ensures text wraps within the frame
-        ).set_duration(audio_clip.duration).set_position("center")
+        img = Image.open(bg_path).convert("RGB")
+        draw = ImageDraw.Draw(img)
+        font = ImageFont.truetype("/app/Roboto-Regular.ttf", 60)
+
+        # Wrap text manually
+        max_width = img.width - 100
+        words = fact_text.split()
+        lines = []
+        line = ""
+        for word in words:
+            test_line = f"{line} {word}".strip()
+            w, _ = draw.textsize(test_line, font=font)
+            if w <= max_width:
+                line = test_line
+            else:
+                lines.append(line)
+                line = word
+        if line:
+            lines.append(line)
+
+        # Draw text centered
+        total_text_height = sum([draw.textsize(l, font=font)[1] for l in lines])
+        current_h = (img.height - total_text_height) // 2
+        for line in lines:
+            w, h = draw.textsize(line, font=font)
+            draw.text(((img.width - w) / 2, current_h), line, font=font, fill="white")
+            current_h += h
+
+        # Save modified image
+        video_bg_path = os.path.join(tmpdir, "video_bg.jpg")
+        img.save(video_bg_path)
 
         # -------------------------------
-        # Combine clips
+        # Make video
         # -------------------------------
-        final_clip = CompositeVideoClip([image_clip, txt_clip]).set_audio(audio_clip)
+        image_clip = ImageClip(video_bg_path).set_duration(audio_clip.duration)
+        final_clip = image_clip.set_audio(audio_clip)
 
-        # -------------------------------
-        # Write output video
-        # -------------------------------
         output_path = os.path.join(tmpdir, "output.mp4")
         final_clip.write_videofile(
             output_path,
