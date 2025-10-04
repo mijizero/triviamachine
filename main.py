@@ -21,25 +21,22 @@ def upload_to_gcs(local_path, gcs_path):
     return f"https://storage.googleapis.com/{bucket_name}/{blob_path}"
 
 def synthesize_speech(text, output_path):
-    """Generate speech using Google Cloud Text-to-Speech (Neural2) with excited tone."""
+    """Generate speech using Google Cloud Text-to-Speech (Neural2) with excited Australian voice."""
     client = texttospeech.TextToSpeechClient()
 
     synthesis_input = texttospeech.SynthesisInput(text=text)
 
     voice = texttospeech.VoiceSelectionParams(
-        language_code="en-US",
-        name="en-US-Neural2-C",   # Neural2 voice
-        # Some voices support 'expressive' features
+        language_code="en-AU",
+        name="en-AU-Neural2-F",  # Australian female Neural2
         ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
     )
 
-    # Excited / energetic style
     audio_config = texttospeech.AudioConfig(
         audio_encoding=texttospeech.AudioEncoding.MP3,
-        speaking_rate=1.1,  # slightly faster
+        speaking_rate=1.2,  # faster for excitement
         pitch=4.0,          # higher pitch
-        volume_gain_db=2.0, # slightly louder
-        effects_profile_id=["telephony-class-application"]  # optional, can remove
+        volume_gain_db=2.0
     )
 
     response = client.synthesize_speech(
@@ -50,11 +47,12 @@ def synthesize_speech(text, output_path):
         out.write(response.audio_content)
 
 def split_text_into_pages(text, draw, font, max_width_ratio=0.8, img_width=1920):
-    """Split text into pages that fit 80% width."""
+    """Split text into pages that fit 80% width dynamically."""
     max_width = img_width * max_width_ratio
     words = text.split()
     pages = []
     current_line = []
+
     for word in words:
         test_line = " ".join(current_line + [word])
         bbox = draw.textbbox((0,0), test_line, font=font)
@@ -71,12 +69,6 @@ def split_text_into_pages(text, draw, font, max_width_ratio=0.8, img_width=1920)
 # -------------------------------
 # Core: Create Video
 # -------------------------------
-
-from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips
-from PIL import Image, ImageDraw, ImageFont
-import tempfile
-import os
-from google.cloud import storage
 
 def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
     """Create trivia video with continuous TTS and gold text with black border."""
@@ -101,14 +93,11 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
 
         # Font setup
         font_path = "Roboto-Regular.ttf"
-        font_size = 25
+        font_size = 50  # bigger for better visibility
         font = ImageFont.truetype(font_path, font_size)
-        max_width = img.width * 0.8  # 80% screen width
 
-        # Split text into pages (approx 4 words per page)
-        words = fact_text.split()
-        words_per_page = 4
-        pages = [" ".join(words[i:i+words_per_page]) for i in range(0, len(words), words_per_page)]
+        # Split text dynamically into pages based on 80% width
+        pages = split_text_into_pages(fact_text, draw, font, max_width_ratio=0.8, img_width=img.width)
         num_pages = len(pages)
         page_duration = audio_duration / num_pages
 
@@ -131,7 +120,7 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
                 page,
                 font=font,
                 fill="#FFD700",          # Gold color
-                stroke_width=3,          # Thickness of black outline
+                stroke_width=4,          # Thickness of black outline
                 stroke_fill="black"      # Outline color
             )
 
@@ -154,7 +143,7 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
         blob = bucket.blob(blob_path.replace("background.jpg", "output.mp4"))
         blob.upload_from_filename(output_path)
         return f"https://storage.googleapis.com/{bucket_name}/{blob.name}"
-        
+
 # -------------------------------
 # Flask Endpoint
 # -------------------------------
