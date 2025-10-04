@@ -27,11 +27,11 @@ WORKDIR /app
 
 # Copy requirements first (for caching)
 COPY requirements.txt .
+COPY Roboto-Regular.ttf
 RUN pip install --upgrade pip setuptools wheel
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy app source including credentials.json
-COPY Roboto-Regular.ttf
 COPY . .
 
 # Run with Gunicorn (Cloud Run friendly)
