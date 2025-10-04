@@ -31,7 +31,7 @@ RUN pip install --upgrade pip setuptools wheel
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy app source including credentials.json
-COPY Roboto-Regular.ttf /app/
+COPY Roboto-Regular.ttf
 COPY . .
 
 # Run with Gunicorn (Cloud Run friendly)
