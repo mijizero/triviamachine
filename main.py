@@ -207,7 +207,7 @@ def generate_endpoint():
         data = request.get_json(silent=True) or {}
 
         fact = data.get("fact") or os.environ.get("DEFAULT_FACT") or \
-            "Honey never spoils. Archaeologists have found edible honey in ancient Egyptian tombs over 3000 years old."
+            "Honey never spoils. Archaeologists have found edible honey in ancient Egyptian tombs over 3000 years old. Honey never spoils. Archaeologists have found edible honey in ancient Egyptian tombs over 3000 years old."
         background_gcs_path = data.get("background") or os.environ.get("BACKGROUND_REF") or \
             "gs://trivia-videos-output/background.jpg"
         output_gcs_path = data.get("output") or os.environ.get("OUTPUT_GCS") or \
