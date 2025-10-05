@@ -3,7 +3,6 @@ FROM python:3.10-slim
 
 # Prevent Python from writing .pyc files and buffering stdout/stderr
 ENV PYTHONUNBUFFERED=1
-# Set OUTPUT_BUCKET environment variable
 ENV OUTPUT_BUCKET=trivia-videos-output
 
 # Install system dependencies
@@ -22,10 +21,10 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# ✅ Download and register Roboto font (for Pillow / MoviePy)
+# ✅ Download and register Roboto font (using curl for reliability)
 RUN mkdir -p /usr/share/fonts/truetype/roboto && \
-    wget -q https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Regular.ttf \
-    -O /usr/share/fonts/truetype/roboto/Roboto-Regular.ttf && \
+    curl -L "https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Regular.ttf" \
+    -o /usr/share/fonts/truetype/roboto/Roboto-Regular.ttf && \
     fc-cache -f -v
 
 # Set working directory
@@ -35,7 +34,6 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --upgrade pip setuptools wheel
 RUN pip install --no-cache-dir -r requirements.txt
-# Install MoviePy explicitly if not already in requirements
 RUN pip install moviepy
 
 # Copy app source including credentials.json
