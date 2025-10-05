@@ -1,6 +1,8 @@
 import os
 import tempfile
-import random
+import requests
+import numpy as np
+from io import BytesIO
 from flask import Flask, request, jsonify
 from google.cloud import storage, texttospeech
 from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips, CompositeVideoClip
@@ -14,6 +16,7 @@ app = Flask(__name__)
 # -------------------------------
 
 def upload_to_gcs(local_path, gcs_path):
+    """Upload file to GCS and return public URL."""
     client = storage.Client()
     bucket_name, blob_path = gcs_path.replace("gs://", "").split("/", 1)
     bucket = client.bucket(bucket_name)
@@ -22,7 +25,9 @@ def upload_to_gcs(local_path, gcs_path):
     return f"https://storage.googleapis.com/{bucket_name}/{blob_path}"
 
 def synthesize_speech(text, output_path):
+    """Generate speech using Google Cloud Text-to-Speech (Neural2) with excited Australian voice."""
     client = texttospeech.TextToSpeechClient()
+
     synthesis_input = texttospeech.SynthesisInput(text=text)
 
     voice = texttospeech.VoiceSelectionParams(
@@ -46,125 +51,139 @@ def synthesize_speech(text, output_path):
         out.write(response.audio_content)
 
 # -------------------------------
-# Image Search (DuckDuckGo)
+# Background Fetch
 # -------------------------------
 
-def fetch_background_images(query, limit=10):
-    """Fetch up to 10 image URLs from DuckDuckGo based on the query."""
+def fetch_background_images(query, max_results=10):
+    """Fetch background images using DuckDuckGo (no API keys)."""
     try:
         with DDGS() as ddgs:
-            results = [r["image"] for r in ddgs.images(query, max_results=limit)]
-        return results
+            results = list(ddgs.images(keywords=query, max_results=max_results))
+            image_urls = [r["image"] for r in results if "image" in r]
+            return image_urls
     except Exception as e:
-        print(f"⚠️ Image fetch failed: {e}")
+        print("Error fetching images:", e)
         return []
+
+def create_slideshow_from_images(image_urls, duration, tmpdir, fallback_path):
+    """Create a crossfading slideshow background."""
+    clips = []
+    if not image_urls:
+        img = Image.open(fallback_path).convert("RGB")
+        frame = np.array(img)
+        return ImageClip(frame).set_duration(duration)
+
+    per_image_duration = max(3, duration / len(image_urls))
+    for url in image_urls:
+        try:
+            r = requests.get(url, timeout=5)
+            img = Image.open(BytesIO(r.content)).convert("RGB")
+            frame = np.array(img)
+            clip = ImageClip(frame).set_duration(per_image_duration).resize(height=1080)
+            clips.append(clip)
+        except Exception as e:
+            print("Error loading image:", e)
+            continue
+
+    if not clips:
+        img = Image.open(fallback_path).convert("RGB")
+        frame = np.array(img)
+        return ImageClip(frame).set_duration(duration)
+
+    slideshow = concatenate_videoclips(
+        [clips[0]] + [clips[i].crossfadein(1) for i in range(1, len(clips))],
+        method="compose"
+    ).set_duration(duration)
+    return slideshow
 
 # -------------------------------
 # Core: Create Video
 # -------------------------------
-
 def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
-    import requests
-    from io import BytesIO
+    """Create trivia video with TTS and gold text, slideshow background."""
+    import tempfile
+    from google.cloud import storage
+    from moviepy.editor import CompositeVideoClip
+    from PIL import Image, ImageDraw, ImageFont
 
     with tempfile.TemporaryDirectory() as tmpdir:
+        # Download fallback background
+        bg_path = os.path.join(tmpdir, "background.jpg")
+        bucket_name, blob_path = background_gcs_path.replace("gs://", "").split("/", 1)
         client = storage.Client()
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(blob_path)
+        blob.download_to_filename(bg_path)
 
-        # --- Generate TTS ---
+        # Generate TTS audio
         audio_path = os.path.join(tmpdir, "audio.mp3")
         synthesize_speech(fact_text, audio_path)
         audio_clip = AudioFileClip(audio_path)
         audio_duration = audio_clip.duration
 
-        # --- Try fetching dynamic images ---
-        image_urls = fetch_background_images(fact_text, limit=10)
-        if not image_urls:
-            # fallback: single GCS image
-            print("⚠️ Using fallback background from GCS.")
-            bg_path = os.path.join(tmpdir, "background.jpg")
-            bucket_name, blob_path = background_gcs_path.replace("gs://", "").split("/", 1)
-            bucket = client.bucket(bucket_name)
-            blob = bucket.blob(blob_path)
-            blob.download_to_filename(bg_path)
-            image_urls = [f"file://{bg_path}"]
+        # Fetch slideshow backgrounds
+        image_urls = fetch_background_images(fact_text.split()[0], max_results=10)
+        slideshow = create_slideshow_from_images(image_urls, audio_duration, tmpdir, bg_path)
 
-        # --- Download and prepare background slides ---
-        images = []
-        for idx, url in enumerate(image_urls):
-            try:
-                if url.startswith("file://"):
-                    img = Image.open(url.replace("file://", ""))
-                else:
-                    resp = requests.get(url, timeout=10)
-                    img = Image.open(BytesIO(resp.content))
-                img = img.convert("RGB").resize((1920, 1080))
-                img_path = os.path.join(tmpdir, f"bg_{idx}.jpg")
-                img.save(img_path)
-                images.append(img_path)
-            except Exception as e:
-                print(f"⚠️ Failed to load {url}: {e}")
+        # Prepare text pages
+        img = Image.open(bg_path).convert("RGB")
+        draw = ImageDraw.Draw(img)
+        font = ImageFont.truetype("Roboto-Regular.ttf", 25)
+        x_margin = int(img.width * 0.1)
+        max_width = int(img.width * 0.8)
 
-        if not images:
-            raise Exception("No usable background images found.")
+        # Split text into pages
+        words = fact_text.split()
+        pages = []
+        current_line = []
+        for word in words:
+            test_line = " ".join(current_line + [word])
+            bbox = draw.textbbox((0, 0), test_line, font=font)
+            w = bbox[2] - bbox[0]
+            if w <= max_width:
+                current_line.append(word)
+            else:
+                pages.append(" ".join(current_line))
+                current_line = [word]
+        if current_line:
+            pages.append(" ".join(current_line))
 
-        # --- Calculate duration per image ---
-        per_image_duration = max(3, audio_duration / len(images))
+        num_pages = len(pages)
+        per_page_dur = audio_duration / num_pages
+
+        # Create text overlays
         clips = []
+        for i, txt in enumerate(pages):
+            start = i * per_page_dur
+            end = (i + 1) * per_page_dur
+            dur = max(0.3, end - start)
 
-        # --- Create slideshow with crossfade ---
-        for i, img_path in enumerate(images):
-            clip = ImageClip(img_path).set_duration(per_image_duration)
-            if i > 0:
-                clip = clip.crossfadein(1.0)
+            page_img = img.copy()
+            draw_page = ImageDraw.Draw(page_img)
+            bbox = draw_page.textbbox((0, 0), txt, font=font)
+            text_w, text_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            x = x_margin + (max_width - text_w) / 2
+            y = (page_img.height - text_h) / 2
+
+            draw_page.text(
+                (x, y), txt, font=font,
+                fill="#FFD700", stroke_width=3, stroke_fill="black"
+            )
+
+            page_path = os.path.join(tmpdir, f"page_{i}.png")
+            page_img.save(page_path)
+
+            clip = ImageClip(page_path).set_start(start).set_duration(dur)
             clips.append(clip)
 
-        slideshow = concatenate_videoclips(clips, method="compose").set_duration(audio_duration)
-
-        # --- Prepare text overlay ---
-        base_img = Image.open(images[0]).convert("RGB")
-        draw = ImageDraw.Draw(base_img)
-        font = ImageFont.truetype("Roboto-Regular.ttf", 25)
-
-        words = fact_text.split()
-        max_width = base_img.width * 0.8
-        lines, current = [], []
-        for w in words:
-            test = " ".join(current + [w])
-            if draw.textbbox((0, 0), test, font=font)[2] < max_width:
-                current.append(w)
-            else:
-                lines.append(" ".join(current))
-                current = [w]
-        if current:
-            lines.append(" ".join(current))
-        text = "\n".join(lines)
-
-        txt_clip = (ImageClip(images[0])
-                    .set_duration(audio_duration)
-                    .set_opacity(0)
-                    .on_color(size=(1920, 1080))
-                    .set_position("center"))
-
-        # Overlay the text
-        txt_overlay = (ImageClip(base_img)
-                       .set_duration(audio_duration)
-                       .set_opacity(0)
-                       .on_color(size=(1920, 1080))
-                       .set_position("center"))
-
-        # --- Composite video with audio ---
-        final_video = CompositeVideoClip([slideshow], size=(1920, 1080))
-        final_video = final_video.set_audio(audio_clip)
-
-        # --- Export and upload ---
+        # Combine layers
+        video_clip = CompositeVideoClip([slideshow] + clips).set_audio(audio_clip)
         output_path = os.path.join(tmpdir, "output.mp4")
-        final_video.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac")
+        video_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac")
 
-        bucket_name, blob_path = background_gcs_path.replace("gs://", "").split("/", 1)
-        bucket = client.bucket(bucket_name)
+        # Upload result
         out_blob = bucket.blob(blob_path.replace("background.jpg", "output.mp4"))
         out_blob.upload_from_filename(output_path)
-
         return f"https://storage.googleapis.com/{bucket_name}/{out_blob.name}"
 
 # -------------------------------
