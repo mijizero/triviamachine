@@ -18,10 +18,15 @@ RUN apt-get update && apt-get install -y \
     libjpeg-dev \
     zlib1g-dev \
     imagemagick \
+    wget \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Ensure fontconfig can find custom fonts
-RUN fc-cache -f -v
+# ✅ Download and register Roboto font (for Pillow / MoviePy)
+RUN mkdir -p /usr/share/fonts/truetype/roboto && \
+    wget -q https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Regular.ttf \
+    -O /usr/share/fonts/truetype/roboto/Roboto-Regular.ttf && \
+    fc-cache -f -v
 
 # Set working directory
 WORKDIR /app
