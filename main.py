@@ -4,7 +4,7 @@ from flask import Flask, request, jsonify
 from google.cloud import storage, texttospeech
 from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip
 from PIL import Image, ImageDraw, ImageFont
-from duckduckgo_search import DuckDuckGoSearch
+from duckduckgo_search import ddg_images
 
 app = Flask(__name__)
 
