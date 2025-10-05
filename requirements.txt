@@ -13,3 +13,4 @@ google-auth-oauthlib>=1.0.0
 google-cloud-secret-manager
 mutagen==1.46.0
 pydub
+duckduckgo-search
