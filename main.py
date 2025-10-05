@@ -99,14 +99,15 @@ def split_text_pages(draw, text, font, img_width, max_width_ratio=0.8):
 # Core: Create Video
 # -------------------------------
 def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
-    """Create trivia video with near-perfect TTS sync (last page included)."""
-    import tempfile, os
-    from PIL import Image, ImageDraw, ImageFont
-    from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip
+    """Create trivia video with continuous TTS and gold text with black border, timed to TTS."""
+    import re
+    import tempfile
     from google.cloud import storage
+    from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip
+    from PIL import Image, ImageDraw, ImageFont
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        # --- Download background ---
+        # Download background
         bg_path = os.path.join(tmpdir, "background.jpg")
         bucket_name, blob_path = background_gcs_path.replace("gs://", "").split("/", 1)
         client = storage.Client()
@@ -114,58 +115,57 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
         blob = bucket.blob(blob_path)
         blob.download_to_filename(bg_path)
 
-        # --- Generate full TTS ---
+        # Generate full TTS audio
         audio_path = os.path.join(tmpdir, "audio.mp3")
         synthesize_speech(fact_text, audio_path)
         audio_clip = AudioFileClip(audio_path)
-        # More reliable than audio_clip.duration
-        audio_duration = float(audio_clip.end or audio_clip.duration)
+        audio_duration = audio_clip.duration
 
-        # --- Prepare drawing setup ---
+        # Prepare image + drawing
         img = Image.open(bg_path).convert("RGB")
-        font_path = "Roboto-Regular.ttf"
-        font_size = 25
-        font = ImageFont.truetype(font_path, font_size)
         draw = ImageDraw.Draw(img)
-        max_width = img.width * 0.8
-        x_margin = img.width * 0.1
+        font = ImageFont.truetype("Roboto-Regular.ttf", 25)
 
-        # --- Split text into width-limited pages ---
+        # Set margins and layout
+        x_margin = int(img.width * 0.1)
+        max_width = int(img.width * 0.8)
+
+        # --- Split text into pages ---
         words = fact_text.split()
-        pages, current = [], []
-        for w in words:
-            test = " ".join(current + [w])
-            bbox = draw.textbbox((0, 0), test, font=font)
-            if (bbox[2] - bbox[0]) <= max_width:
-                current.append(w)
+        pages = []
+        current_line = []
+        for word in words:
+            test_line = " ".join(current_line + [word])
+            bbox = draw.textbbox((0, 0), test_line, font=font)
+            w = bbox[2] - bbox[0]
+            if w <= max_width:
+                current_line.append(word)
             else:
-                pages.append(" ".join(current))
-                current = [w]
-        if current:
-            pages.append(" ".join(current))
-        if not pages:
-            pages = [fact_text]
+                pages.append(" ".join(current_line))
+                current_line = [word]
+        if current_line:
+            pages.append(" ".join(current_line))
 
-        # --- Compute start times & durations per page ---
-        total_words = len(words)
-        cumulative = 0
+        num_pages = len(pages)
+        per_page_dur = audio_duration / num_pages
+
+        # Assign rough timestamps per page
         page_infos = []
-        for i, p in enumerate(pages):
-            wc = len(p.split())
-            start = (cumulative / total_words) * audio_duration
-            end = ((cumulative + wc) / total_words) * audio_duration
-            page_infos.append([p, start, end])
-            cumulative += wc
+        for i, txt in enumerate(pages):
+            start = i * per_page_dur
+            end = (i + 1) * per_page_dur
+            page_infos.append((txt, start, end))
 
-        # --- Fix: trim last page 0.2s earlier to match speech end ---
-        page_infos[-1][2] = max(0, audio_duration - 0.2)
-
-        # --- Build page clips ---
+        # --- Build page clips with improved sync ---
         clips = []
         for i, (txt, start, end) in enumerate(page_infos):
             dur = max(0.3, end - start)
-            # Small lead so text appears just before speech
-            start_time = max(0, start - 0.25)
+
+            # 👇 Small smarter lead adjustment
+            if i == len(page_infos) - 1:
+                start_time = max(0, start - 0.5)   # last page: 0.5 s earlier
+            else:
+                start_time = max(0, start - 0.3)   # others: 0.3 s earlier
 
             page_img = img.copy()
             draw_page = ImageDraw.Draw(page_img)
@@ -173,28 +173,27 @@ def create_trivia_video(fact_text, background_gcs_path, output_gcs_path):
             text_w, text_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
             x = x_margin + (max_width - text_w) / 2
             y = (page_img.height - text_h) / 2
+
+            # Gold text with black outline
             draw_page.text(
                 (x, y), txt, font=font,
                 fill="#FFD700", stroke_width=3, stroke_fill="black"
             )
+
             page_path = os.path.join(tmpdir, f"page_{i}.png")
             page_img.save(page_path)
 
-            clips.append(
-                ImageClip(page_path).set_start(start_time).set_duration(dur)
-            )
+            clip = ImageClip(page_path).set_start(start_time).set_duration(dur)
+            clips.append(clip)
 
-        # --- Combine ---
-        composite = CompositeVideoClip(clips, size=(img.width, img.height))
-        composite = composite.set_audio(audio_clip).set_duration(audio_duration)
-        out_path = os.path.join(tmpdir, "output.mp4")
-        composite.write_videofile(out_path, fps=24, codec="libx264", audio_codec="aac")
+        # Combine and export
+        video_clip = CompositeVideoClip(clips).set_audio(audio_clip)
+        output_path = os.path.join(tmpdir, "output.mp4")
+        video_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac")
 
-        # --- Upload output ---
-        out_blob = client.bucket(bucket_name).blob(
-            blob_path.replace("background.jpg", "output.mp4")
-        )
-        out_blob.upload_from_filename(out_path)
+        # Upload to GCS
+        out_blob = bucket.blob(blob_path.replace("background.jpg", "output.mp4"))
+        out_blob.upload_from_filename(output_path)
         return f"https://storage.googleapis.com/{bucket_name}/{out_blob.name}"
 
 # -------------------------------
