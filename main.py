@@ -4,7 +4,7 @@ from flask import Flask, request, jsonify
 from google.cloud import storage, texttospeech
 from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip
 from PIL import Image, ImageDraw, ImageFont
-from duckduckgo_search import DuckDuckGo
+from duckduckgo_search import ddg_images
 import requests
 
 app = Flask(__name__)
@@ -55,8 +55,7 @@ def create_trivia_video(fact_text, output_gcs_path):
     """Create trivia video with dynamic DuckDuckGo background, TTS audio, gold text."""
     with tempfile.TemporaryDirectory() as tmpdir:
         # --- Fetch background from DuckDuckGo ---
-        searcher = DuckDuckGo()
-        results = searcher.images(fact_text, max_results=1)
+        results = ddg_images(fact_text, max_results=1)
         if results:
             img_url = results[0]["image"]
             response = requests.get(img_url)
