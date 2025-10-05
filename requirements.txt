@@ -14,3 +14,4 @@ google-cloud-secret-manager
 mutagen==1.46.0
 pydub
 duckduckgo-search
+beautifulsoup4
