@@ -42,10 +42,13 @@ def synthesize_speech(text, output_path):
     with open(output_path, "wb") as out:
         out.write(response.audio_content)
 
+from duckduckgo_search import DuckDuckGoSearch
+
 def fetch_background_images(query, max_images=10):
     """Fetch image URLs from DuckDuckGo; fallback to empty list."""
     try:
-        results = ddg_images(query, max_results=max_images)
+        searcher = DuckDuckGoSearch()
+        results = searcher.search_images(query, max_results=max_images)
         urls = [r["image"] for r in results if "image" in r]
         return urls
     except Exception:
