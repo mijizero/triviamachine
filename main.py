@@ -22,6 +22,36 @@ from vertexai.generative_models import GenerativeModel
 
 vertexai.init(project=os.getenv("trivia-machine-472207"), location="asia-southeast1")
 
+# --- Duplicate cache setup ---
+FACT_CACHE_PATH = "/tmp/last_facts.txt"
+
+def load_recent_facts():
+    if os.path.exists(FACT_CACHE_PATH):
+        with open(FACT_CACHE_PATH, "r") as f:
+            return [line.strip() for line in f.readlines() if line.strip()]
+    return []
+
+def save_fact(fact_text):
+    facts = load_recent_facts()
+    facts.append(fact_text)
+    facts = facts[-10:]  # keep last 10
+    with open(FACT_CACHE_PATH, "w") as f:
+        f.write("\n".join(facts))
+
+def get_unique_fact():
+    """Ensure newly generated fact isn't a recent duplicate."""
+    recent = load_recent_facts()
+    for _ in range(5):
+        fact = get_dynamic_fact()
+        if fact not in recent:
+            save_fact(fact)
+            return fact
+    # fallback if all are dupes
+    fact = get_dynamic_fact()
+    save_fact(fact)
+    return fact
+
+
 def get_dynamic_fact():
     """Randomly choose a trivia source (WikiData or Gemini) and return a 3-sentence 'Did you know' fact with supporting context."""
     source = random.choice([1, 2, 3, 4])
@@ -215,7 +245,7 @@ def create_trivia_video(fact_text, output_gcs_path):
 
         # --- Prepare text ---
         draw = ImageDraw.Draw(img)
-        font = ImageFont.truetype("Roboto-Regular.ttf", 45)  # reduced slightly
+        font = ImageFont.truetype("Roboto-Regular.ttf", 45)
         x_margin = int(img.width * 0.1)
         max_width = int(img.width * 0.8)
 
@@ -297,7 +327,7 @@ def create_trivia_video(fact_text, output_gcs_path):
 def generate_endpoint():
     try:
         data = request.get_json(silent=True) or {}
-        fact = data.get("fact") or get_dynamic_fact()
+        fact = data.get("fact") or get_unique_fact()
         output_gcs_path = data.get("output") or os.environ.get("OUTPUT_GCS") or \
             "gs://trivia-videos-output/output.mp4"
 
