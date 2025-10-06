@@ -262,6 +262,8 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
         bg_path = os.path.join(tmpdir,"background.jpg")
         valid_image = False
         img_url = None
+
+        # 1️⃣ Try DuckDuckGo first
         try:
             with DDGS() as ddgs:
                 results = list(ddgs.images(search_query, max_results=1))
@@ -276,13 +278,44 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
                         valid_image=True
         except Exception:
             pass
+
+        # 2️⃣ Pexels fallback if DuckDuckGo failed
+        if not valid_image:
+            try:
+                # Simplify search query for Pexels
+                simplified_query = search_query.lower()
+                for word in ["in", "of", "the", "from", "at", "on", "a", "an"]:
+                    simplified_query = simplified_query.replace(f" {word} ", " ")
+                simplified_query = simplified_query.strip().split()
+                simplified_query = simplified_query[:2]  # keep only first 2 words
+                simplified_query = " ".join(simplified_query)
+                if len(simplified_query) < 2:
+                    simplified_query = search_query  # fallback to original if too short
+
+                headers = {"Authorization": "zXJ9dAVT3F0TLcEqMkGXtE5H8uePbhEvuq0kBnWnbq8McMpIKTQeWnDQ"}
+                pexels_url = f"https://api.pexels.com/v1/search?query={simplified_query}&orientation=portrait&per_page=1"
+                r = requests.get(pexels_url, headers=headers, timeout=10)
+                if r.ok:
+                    data = r.json()
+                    if data.get("photos"):
+                        img_url = data["photos"][0]["src"]["original"]
+                        response = requests.get(img_url, stream=True, timeout=10)
+                        if response.status_code == 200 and "image" in response.headers.get("Content-Type", ""):
+                            with open(bg_path, "wb") as f:
+                                for chunk in response.iter_content(8192):
+                                    f.write(chunk)
+                            valid_image = True
+            except Exception as e:
+                print("Pexels fallback failed:", e)
+
+        # 3️⃣ Final fallback to default background
         if not valid_image:
             fallback_url = "https://storage.googleapis.com/trivia-videos-output/background.jpg"
             response = requests.get(fallback_url)
             with open(bg_path,"wb") as f:
                 f.write(response.content)
 
-        # Resize/crop 1080x1920
+        # --- Resize/crop to 1080x1920 ---
         target_size=(1080,1920)
         img = Image.open(bg_path).convert("RGB")
         img_ratio = img.width/img.height
@@ -301,13 +334,13 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
         bg_path=os.path.join(tmpdir,"background_resized.jpg")
         img.save(bg_path)
 
-        # TTS
+        # --- TTS ---
         audio_path=os.path.join(tmpdir,"audio.mp3")
         synthesize_speech(fact_text,audio_path)
         audio_clip=AudioFileClip(audio_path)
         audio_duration=audio_clip.duration
 
-        # Text overlay
+        # --- Text overlay ---
         draw=ImageDraw.Draw(img)
         font=ImageFont.truetype("Roboto-Regular.ttf",45)
         x_margin=int(img.width*0.1)
