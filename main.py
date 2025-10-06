@@ -23,28 +23,23 @@ def upload_to_gcs(local_path, gcs_path):
     return f"https://storage.googleapis.com/{bucket_name}/{blob_path}"
 
 def synthesize_speech(text, output_path):
-    """Generate speech using Google Cloud Text-to-Speech (Neural2) with excited Australian voice."""
+    """Generate speech using Google Cloud Text-to-Speech."""
     client = texttospeech.TextToSpeechClient()
-
     synthesis_input = texttospeech.SynthesisInput(text=text)
-
     voice = texttospeech.VoiceSelectionParams(
         language_code="en-AU",
         name="en-AU-Neural2-D",
         ssml_gender=texttospeech.SsmlVoiceGender.MALE
     )
-
     audio_config = texttospeech.AudioConfig(
         audio_encoding=texttospeech.AudioEncoding.MP3,
         speaking_rate=1.0,
         pitch=2.0,
         volume_gain_db=2.0
     )
-
     response = client.synthesize_speech(
         input=synthesis_input, voice=voice, audio_config=audio_config
     )
-
     with open(output_path, "wb") as out:
         out.write(response.audio_content)
 
@@ -52,7 +47,7 @@ def synthesize_speech(text, output_path):
 # Core: Create Video
 # -------------------------------
 def create_trivia_video(fact_text, output_gcs_path):
-    """Create trivia video with dynamic DuckDuckGo background, TTS audio, gold text."""
+    """Create Shorts-format trivia video with DuckDuckGo background, TTS audio, gold text."""
     with tempfile.TemporaryDirectory() as tmpdir:
         # --- Fetch background from DuckDuckGo ---
         with DDGS() as ddgs:
@@ -64,23 +59,44 @@ def create_trivia_video(fact_text, output_gcs_path):
             with open(bg_path, "wb") as f:
                 f.write(response.content)
         else:
-            # fallback background
             bg_path = os.path.join(tmpdir, "background.jpg")
             fallback_url = "https://storage.googleapis.com/trivia-videos-output/background.jpg"
             response = requests.get(fallback_url)
             with open(bg_path, "wb") as f:
                 f.write(response.content)
 
-        # Generate TTS
+        # --- Resize / crop to YouTube Shorts (1080x1920) ---
+        target_size = (1080, 1920)
+        img = Image.open(bg_path).convert("RGB")
+        img_ratio = img.width / img.height
+        target_ratio = target_size[0] / target_size[1]
+
+        if img_ratio > target_ratio:
+            # too wide → crop sides
+            new_width = int(img.height * target_ratio)
+            left = (img.width - new_width) // 2
+            right = left + new_width
+            img = img.crop((left, 0, right, img.height))
+        else:
+            # too tall → crop top/bottom
+            new_height = int(img.width / target_ratio)
+            top = (img.height - new_height) // 2
+            bottom = top + new_height
+            img = img.crop((0, top, img.width, bottom))
+
+        img = img.resize(target_size, Image.LANCZOS)
+        bg_path = os.path.join(tmpdir, "background_resized.jpg")
+        img.save(bg_path)
+
+        # --- Generate TTS ---
         audio_path = os.path.join(tmpdir, "audio.mp3")
         synthesize_speech(fact_text, audio_path)
         audio_clip = AudioFileClip(audio_path)
         audio_duration = audio_clip.duration
 
-        # Prepare image + drawing
-        img = Image.open(bg_path).convert("RGB")
+        # --- Prepare text ---
         draw = ImageDraw.Draw(img)
-        font = ImageFont.truetype("Roboto-Regular.ttf", 25)
+        font = ImageFont.truetype("Roboto-Regular.ttf", 50)
         x_margin = int(img.width * 0.1)
         max_width = int(img.width * 0.8)
 
@@ -103,21 +119,24 @@ def create_trivia_video(fact_text, output_gcs_path):
         num_pages = len(pages)
         per_page_dur = audio_duration / num_pages
 
-        # Build clips (show each text sequentially)
+        # --- Build clips ---
         clips = []
         for i, txt in enumerate(pages):
-            dur = max(0.3, per_page_dur)
+            dur = max(0.5, per_page_dur)
             page_img = img.copy()
             draw_page = ImageDraw.Draw(page_img)
             bbox = draw_page.textbbox((0, 0), txt, font=font)
             text_w, text_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
-            x = x_margin + (max_width - text_w) / 2
+            x = (page_img.width - text_w) / 2
             y = (page_img.height - text_h) / 2
 
-            # Gold text with black outline
             draw_page.text(
-                (x, y), txt, font=font,
-                fill="#FFD700", stroke_width=3, stroke_fill="black"
+                (x, y),
+                txt,
+                font=font,
+                fill="#FFD700",
+                stroke_width=4,
+                stroke_fill="black",
             )
 
             page_path = os.path.join(tmpdir, f"page_{i}.png")
@@ -125,13 +144,18 @@ def create_trivia_video(fact_text, output_gcs_path):
             clip = ImageClip(page_path).set_duration(dur)
             clips.append(clip)
 
-        # Combine into final video (sequential pages)
         video_clip = concatenate_videoclips(clips).set_audio(audio_clip)
-
         output_path = os.path.join(tmpdir, "output.mp4")
-        video_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac")
+        video_clip.write_videofile(
+            output_path,
+            fps=30,
+            codec="libx264",
+            audio_codec="aac",
+            threads=4,
+            preset="ultrafast",
+        )
 
-        # Upload to GCS
+        # --- Upload to GCS ---
         client = storage.Client()
         bucket_name, blob_path = output_gcs_path.replace("gs://", "").split("/", 1)
         bucket = client.bucket(bucket_name)
