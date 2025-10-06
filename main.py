@@ -6,25 +6,25 @@ from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip, concate
 from PIL import Image, ImageDraw, ImageFont
 from duckduckgo_search import DDGS
 import requests
-import google.generativeai as genai
+import vertexai
+from vertexai.generative_models import GenerativeModel
 
 app = Flask(__name__)
 
 # -------------------------------
 # Gemini Setup
 # -------------------------------
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+vertexai.init(project=os.getenv("trivia-machine-472207"), location="asia-southeast1")
+gemini_model = GenerativeModel("gemini-2.5-flash")
 
-def extract_search_topic(fact_text):
-    """Use Gemini to extract the main subject of the fact for better image search."""
-    try:
-        prompt = f"Extract the main subject or object from this trivia fact for image search: '{fact_text}'. Return only 1-3 keywords."
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        response = model.generate_content(prompt)
-        topic = response.text.strip().replace('"', '')
-        return topic if topic else fact_text
-    except Exception:
-        return fact_text
+vertexai.init(project=os.environ["GOOGLE_CLOUD_PROJECT"], location="us-central1")
+
+def extract_search_query(fact_text):
+    """Use Gemini to extract a short search keyword/phrase from the fact."""
+    model = GenerativeModel("gemini-1.5-flash")
+    prompt = f"Extract the main subject or keyword to search an image for this trivia: {fact_text}"
+    response = model.generate_content(prompt)
+    return response.text.strip() if response and response.text else fact_text
 
 # -------------------------------
 # Helpers
