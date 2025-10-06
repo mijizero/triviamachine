@@ -270,40 +270,38 @@ def create_trivia_video(fact_text, output_gcs_path):
             page_text = "\n".join(lines[i:i + 2])
             pages.append(page_text)
 
-        num_pages = len(pages)
-        per_page_dur = audio_duration / num_pages
+        # --- Adaptive timing (Option B) ---
+        def estimate_read_time(text):
+            words = len(text.split())
+            commas = text.count(",")
+            periods = text.count(".")
+            return words * 0.22 + commas * 0.4 + periods * 0.5
 
-                # --- Build clips ---
-        clips = []
-        
-        # Assign longer time to pages with more pauses (commas, periods)
-        weights = []
-        for txt in pages:
-            pauses = txt.count(",") + txt.count(".")
-            weights.append(1 + 0.2 * pauses)  # 20% more per punctuation
-        
+        weights = [estimate_read_time(p) for p in pages]
         total_weight = sum(weights)
-        durations = [(w / total_weight) * audio_duration for w in weights]
-        
-        for i, (txt, dur) in enumerate(zip(pages, durations)):
+        per_page_durations = [(w / total_weight) * audio_duration for w in weights]
+
+        # --- Build clips ---
+        clips = []
+        for i, (txt, dur) in enumerate(zip(pages, per_page_durations)):
             page_img = img.copy()
             draw_page = ImageDraw.Draw(page_img)
             bbox = draw_page.multiline_textbbox((0, 0), txt, font=font, spacing=15)
             text_w, text_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
             x = (page_img.width - text_w) / 2
             y = (page_img.height - text_h) / 2
-        
+
             draw_page.multiline_text(
                 (x, y),
                 txt,
                 font=font,
                 fill="#FFD700",
                 spacing=15,
-                stroke_width=30,
+                stroke_width=20,
                 stroke_fill="black",
                 align="center"
             )
-        
+
             page_path = os.path.join(tmpdir, f"page_{i}.png")
             page_img.save(page_path)
             clip = ImageClip(page_path).set_duration(dur)
