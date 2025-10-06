@@ -249,11 +249,36 @@ def create_trivia_video(fact_text, output_gcs_path):
             dur = max(0.5, per_page_dur)
             page_img = img.copy()
             draw_page = ImageDraw.Draw(page_img)
+
+            # Compute text box
             bbox = draw_page.multiline_textbbox((0, 0), txt, font=font, spacing=15)
             text_w, text_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
             x = (page_img.width - text_w) / 2
             y = (page_img.height - text_h) / 2
 
+            # --- Add cinematic blurred translucent background box ---
+            # Create overlay for blur area
+            from PIL import ImageFilter
+            blur_margin_w = int(text_w * 0.55)
+            blur_margin_h = int(text_h * 0.9)
+            box_left = int(max(0, x - (blur_margin_w - text_w) / 2))
+            box_top = int(max(0, y - (blur_margin_h - text_h) / 2))
+            box_right = int(min(page_img.width, box_left + blur_margin_w))
+            box_bottom = int(min(page_img.height, box_top + blur_margin_h))
+
+            # Crop and blur region for cinematic effect
+            region = page_img.crop((box_left, box_top, box_right, box_bottom))
+            region = region.filter(ImageFilter.GaussianBlur(radius=12))
+
+            # Overlay blurred region back with transparency
+            overlay = Image.new("RGBA", page_img.size, (0, 0, 0, 0))
+            region_with_tint = Image.new("RGBA", region.size, (0, 0, 0, 120))  # dark translucent tint
+            region = Image.alpha_composite(region.convert("RGBA"), region_with_tint)
+            overlay.paste(region, (box_left, box_top))
+            page_img = Image.alpha_composite(page_img.convert("RGBA"), overlay).convert("RGB")
+
+            # Draw text over cinematic box
+            draw_page = ImageDraw.Draw(page_img)
             draw_page.multiline_text(
                 (x, y),
                 txt,
