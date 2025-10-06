@@ -155,8 +155,11 @@ def synthesize_speech(text, output_path):
 # -------------------------------
 def get_youtube_creds_from_secret():
     client = secretmanager.SecretManagerServiceClient()
-    secret_name = os.getenv("CREDENTIALS_SECRET_NAME", "Credentials_Trivia")
-    response = client.access_secret_version(name=f"projects/{os.getenv('GOOGLE_CLOUD_PROJECT')}/secrets/{secret_name}/versions/latest")
+    secret_name = "Credentials_Trivia"
+    project_id = "trivia-machine-472207"
+    response = client.access_secret_version(
+        name=f"projects/{project_id}/secrets/{secret_name}/versions/latest"
+    )
     creds_json = response.payload.data.decode("UTF-8")
     return Credentials.from_authorized_user_info(eval(creds_json))
 
