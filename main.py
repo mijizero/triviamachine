@@ -14,7 +14,7 @@ app = Flask(__name__)
 # -------------------------------
 # Gemini Setup
 # -------------------------------
-vertexai.init(project=os.getenv("trivia-machine-472207"), location="asia-southeast1")
+vertexai.init(project="trivia-machine-472207", location="asia-southeast1")
 
 def extract_search_query(fact_text):
     """Use Gemini to extract a short search keyword/phrase from the fact."""
@@ -66,18 +66,27 @@ def create_trivia_video(fact_text, output_gcs_path):
         # --- Determine better image search query via Gemini ---
         search_query = extract_search_query(fact_text)
 
-        # --- Fetch background from DuckDuckGo ---
+        # --- Fetch background from DuckDuckGo safely ---
+        bg_path = os.path.join(tmpdir, "background.jpg")
+        valid_image = False
+
         with DDGS() as ddgs:
-            search_query = extract_search_query(fact_text)
             results = list(ddgs.images(search_query, max_results=1))
+
         if results:
-            img_url = results[0]["image"]
-            response = requests.get(img_url)
-            bg_path = os.path.join(tmpdir, "background.jpg")
-            with open(bg_path, "wb") as f:
-                f.write(response.content)
-        else:
-            bg_path = os.path.join(tmpdir, "background.jpg")
+            img_url = results[0].get("image")
+            try:
+                response = requests.get(img_url, stream=True, timeout=10)
+                if response.status_code == 200 and "image" in response.headers.get("Content-Type", ""):
+                    with open(bg_path, "wb") as f:
+                        for chunk in response.iter_content(8192):
+                            f.write(chunk)
+                    valid_image = True
+            except Exception:
+                valid_image = False
+
+        if not valid_image:
+            # fallback background
             fallback_url = "https://storage.googleapis.com/trivia-videos-output/background.jpg"
             response = requests.get(fallback_url)
             with open(bg_path, "wb") as f:
