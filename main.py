@@ -65,7 +65,7 @@ def create_trivia_video(fact_text, output_gcs_path):
     """Create Shorts-format trivia video with DuckDuckGo background, TTS audio, gold text."""
     with tempfile.TemporaryDirectory() as tmpdir:
         # --- Determine better image search query via Gemini ---
-        search_query = extract_search_topic(fact_text)
+        search_query = extract_search_query(fact_text)
 
         # --- Fetch background from DuckDuckGo ---
         with DDGS() as ddgs:
