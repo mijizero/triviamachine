@@ -15,44 +15,83 @@ app = Flask(__name__)
 # -------------------------------
 # Dynamic Fact
 # -------------------------------
-def get_dynamic_fact():
-    """Randomly get a trivia fact from one of four sources."""
-    source = random.choice([1, 2, 3, 4])
-    model = GenerativeModel("gemini-2.5-flash")
+import random
+import requests
+import vertexai
+from vertexai.generative_models import GenerativeModel
 
-    # --- 1. WikiData ---
+vertexai.init(project=os.getenv("trivia-machine-472207"), location="asia-southeast1")
+
+def get_dynamic_fact():
+    """Randomly choose a trivia source (WikiData or Gemini) and return a 3-sentence 'Did you know' fact with supporting context."""
+    source = random.choice([1, 2, 3, 4])
+
+    def gemini_fact(prompt):
+        model = GenerativeModel("gemini-2.5-flash")
+        response = model.generate_content(prompt)
+        return response.text.strip()
+
+    # -------------------------------
+    # 1. Wikipedia → Gemini Rewrite
+    # -------------------------------
     if source == 1:
         try:
-            url = "https://www.wikidata.org/w/api.php?action=query&format=json&list=random&rnnamespace=0&rnlimit=1"
-            response = requests.get(url)
-            data = response.json()
-            title = data["query"]["random"][0]["title"]
-            fact_text = f"Did you know that {title} has an interesting story behind it?"
+            res = requests.get("https://en.wikipedia.org/api/rest_v1/page/random/summary", timeout=10)
+            data = res.json()
+            title = data.get("title", "")
+            extract = data.get("extract", "")
+            wiki_text = f"{title}: {extract}"
+
+            # Pass it to Gemini for a polished 3-sentence fact
+            prompt = (
+                "Rewrite the following Wikipedia summary into a 3-sentence trivia fact. "
+                "Start with 'Did you know', then add 2 supporting sentences that give background or interesting details.\n\n"
+                f"Summary: {wiki_text}"
+            )
+            return gemini_fact(prompt)
         except Exception:
-            fact_text = "Did you know honey never spoils? Archaeologists found edible honey in tombs over 3000 years old."
+            pass
 
-    # --- 2. Gemini Tech Fact ---
-    elif source == 2:
-        prompt = "Give me a single-sentence 'Did you know...' trivia fact about technology."
-        response = model.generate_content(prompt)
-        fact_text = response.text.strip()
+    # -------------------------------
+    # 2. Gemini – Technology
+    # -------------------------------
+    if source == 2:
+        prompt = (
+            "Give one factual and engaging piece of technology trivia in 3 sentences. "
+            "Sentence 1 must start with 'Did you know'. "
+            "Sentences 2 and 3 should add interesting details or background."
+        )
+        return gemini_fact(prompt)
 
-    # --- 3. Gemini Science/History/Culture Fact ---
-    elif source == 3:
-        prompt = "Give me a single-sentence 'Did you know...' trivia fact about science, history, or culture."
-        response = model.generate_content(prompt)
-        fact_text = response.text.strip()
+    # -------------------------------
+    # 3. Gemini – Science/History/Culture
+    # -------------------------------
+    if source == 3:
+        prompt = (
+            "Give one true and engaging trivia about science, history, or culture in 3 sentences. "
+            "Start with 'Did you know', then add 2 supporting sentences with factual context or significance."
+        )
+        return gemini_fact(prompt)
 
-    # --- 4. Gemini Trending/News Fact ---
-    elif source == 4:
-        prompt = "Give me a short 'Did you know...' style trivia fact related to recent or trending topics in media or world news."
-        response = model.generate_content(prompt)
-        fact_text = response.text.strip()
+    # -------------------------------
+    # 4. Gemini – Trending Media/News
+    # -------------------------------
+    if source == 4:
+        prompt = (
+            "Give one short, factual trivia about trending media, movies, or celebrities in 3 sentences. "
+            "The first must start with 'Did you know'. "
+            "The next 2 sentences should give interesting supporting info or context."
+        )
+        return gemini_fact(prompt)
 
-    else:
-        fact_text = "Did you know honey never spoils?"
-
-    return fact_text
+    # -------------------------------
+    # Fallback
+    # -------------------------------
+    return (
+        "Did you know honey never spoils? "
+        "Archaeologists have found edible honey in ancient Egyptian tombs over 3000 years old. "
+        "Its natural composition prevents bacteria from growing, keeping it preserved for millennia."
+    )
 
 # -------------------------------
 # Gemini Setup
