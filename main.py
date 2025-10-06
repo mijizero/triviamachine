@@ -6,8 +6,25 @@ from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip, concate
 from PIL import Image, ImageDraw, ImageFont
 from duckduckgo_search import DDGS
 import requests
+import google.generativeai as genai
 
 app = Flask(__name__)
+
+# -------------------------------
+# Gemini Setup
+# -------------------------------
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+
+def extract_search_topic(fact_text):
+    """Use Gemini to extract the main subject of the fact for better image search."""
+    try:
+        prompt = f"Extract the main subject or object from this trivia fact for image search: '{fact_text}'. Return only 1-3 keywords."
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        response = model.generate_content(prompt)
+        topic = response.text.strip().replace('"', '')
+        return topic if topic else fact_text
+    except Exception:
+        return fact_text
 
 # -------------------------------
 # Helpers
@@ -49,9 +66,12 @@ def synthesize_speech(text, output_path):
 def create_trivia_video(fact_text, output_gcs_path):
     """Create Shorts-format trivia video with DuckDuckGo background, TTS audio, gold text."""
     with tempfile.TemporaryDirectory() as tmpdir:
+        # --- Determine better image search query via Gemini ---
+        search_query = extract_search_topic(fact_text)
+
         # --- Fetch background from DuckDuckGo ---
         with DDGS() as ddgs:
-            results = list(ddgs.images(fact_text, max_results=1))
+            results = list(ddgs.images(search_query, max_results=1))
         if results:
             img_url = results[0]["image"]
             response = requests.get(img_url)
