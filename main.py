@@ -6,10 +6,53 @@ from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip, concate
 from PIL import Image, ImageDraw, ImageFont
 from duckduckgo_search import DDGS
 import requests
+import random
 import vertexai
 from vertexai.generative_models import GenerativeModel
 
 app = Flask(__name__)
+
+# -------------------------------
+# Dynamic Fact
+# -------------------------------
+def get_dynamic_fact():
+    """Randomly get a trivia fact from one of four sources."""
+    source = random.choice([1, 2, 3, 4])
+    model = GenerativeModel("gemini-2.5-flash")
+
+    # --- 1. WikiData ---
+    if source == 1:
+        try:
+            url = "https://www.wikidata.org/w/api.php?action=query&format=json&list=random&rnnamespace=0&rnlimit=1"
+            response = requests.get(url)
+            data = response.json()
+            title = data["query"]["random"][0]["title"]
+            fact_text = f"Did you know that {title} has an interesting story behind it?"
+        except Exception:
+            fact_text = "Did you know honey never spoils? Archaeologists found edible honey in tombs over 3000 years old."
+
+    # --- 2. Gemini Tech Fact ---
+    elif source == 2:
+        prompt = "Give me a single-sentence 'Did you know...' trivia fact about technology."
+        response = model.generate_content(prompt)
+        fact_text = response.text.strip()
+
+    # --- 3. Gemini Science/History/Culture Fact ---
+    elif source == 3:
+        prompt = "Give me a single-sentence 'Did you know...' trivia fact about science, history, or culture."
+        response = model.generate_content(prompt)
+        fact_text = response.text.strip()
+
+    # --- 4. Gemini Trending/News Fact ---
+    elif source == 4:
+        prompt = "Give me a short 'Did you know...' style trivia fact related to recent or trending topics in media or world news."
+        response = model.generate_content(prompt)
+        fact_text = response.text.strip()
+
+    else:
+        fact_text = "Did you know honey never spoils?"
+
+    return fact_text
 
 # -------------------------------
 # Gemini Setup
@@ -198,8 +241,7 @@ def create_trivia_video(fact_text, output_gcs_path):
 def generate_endpoint():
     try:
         data = request.get_json(silent=True) or {}
-        fact = data.get("fact") or os.environ.get("DEFAULT_FACT") or \
-            "Giraffes are 30 times more likely to get hit by lightning than people."
+        fact = data.get("fact") or get_dynamic_fact()
         output_gcs_path = data.get("output") or os.environ.get("OUTPUT_GCS") or \
             "gs://trivia-videos-output/output.mp4"
 
