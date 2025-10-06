@@ -71,6 +71,7 @@ def create_trivia_video(fact_text, output_gcs_path):
 
         # --- Fetch background from DuckDuckGo ---
         with DDGS() as ddgs:
+            search_query = extract_search_query(fact_text)
             results = list(ddgs.images(search_query, max_results=1))
         if results:
             img_url = results[0]["image"]
