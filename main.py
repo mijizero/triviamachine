@@ -299,7 +299,7 @@ def create_trivia_video(fact_text, output_gcs_path):
                 font=font,
                 fill="#FFD700",
                 spacing=15,
-                stroke_width=20,
+                stroke_width=30,
                 stroke_fill="black",
                 align="center"
             )
