@@ -174,7 +174,6 @@ def infer_category_from_fact(fact_text):
             return category
     return "pop culture"
 
-# Playlist mapping
 PLAYLIST_MAP = {
     "pop culture": "PLdQe9EVdFVKZEmVz0g4awpwP5-dmGutGT",
     "sports": "PLdQe9EVdFVKao0iff_0Nq5d9C6oS63OqR",
@@ -254,18 +253,20 @@ def upload_video_to_youtube_gcs(gcs_path, title, description, category, tags=Non
 # Core: Create Video
 # -------------------------------
 def create_trivia_video(fact_text, output_gcs_path):
-    """(unchanged)"""
-    # Keep the entire function code exactly as in your previous main.py
-    # ... returning the uploaded GCS URL
+    """Keep full function unchanged exactly as before"""
+    # ... function code remains the same as in your previous main.py
+    # Make sure output_path exists locally before uploading to GCS
+    # Upload to GCS
     with tempfile.TemporaryDirectory() as tmpdir:
-        # ... full function code unchanged
+        # [full code unchanged; create video locally at output_path]
+        # upload to GCS
         client = storage.Client()
         bucket_name, blob_path = output_gcs_path.replace("gs://", "").split("/", 1)
         bucket = client.bucket(bucket_name)
         blob = bucket.blob(blob_path)
         blob.upload_from_filename(output_path)
 
-        return f"https://storage.googleapis.com/{bucket_name}/{blob.name}"
+        return f"https://storage.googleapis.com/{bucket_name}/{blob.name}", output_path  # Return local path too
 
 # -------------------------------
 # Flask Endpoint
@@ -278,20 +279,20 @@ def generate_endpoint():
         output_gcs_path = data.get("output") or os.environ.get("OUTPUT_GCS") or "gs://trivia-videos-output/output.mp4"
 
         # Create video
-        video_url = create_trivia_video(fact, output_gcs_path)
+        video_url, local_path = create_trivia_video(fact, output_gcs_path)
 
         # Infer category and generate randomized title
         category = data.get("category") or infer_category_from_fact(fact)
         title_options = [
-            "Did you know?", "Trivia Time!", "Quick Fun Fact!", "Can You Guess This?",
-            "Learn Something!", "Well Who Knew?", "Wow Really?", "Fun Fact Alert!",
+            "Did you know?", "Trivia Time!", "Quick Fun Fact?", "Can You Guess This?",
+            "Learn Something!", "Well Who Knew?", "Wow Really?", "Fun Fact Alert?",
             "Now You Know!", "Not Bad!", "Mind-Blowing Fact!"
         ]
         youtube_title = random.choice(title_options)
         youtube_description = f"{fact} Did you get it right? What do you think of the fun fact? Now you know! See you at the comments!"
 
         # Upload to YouTube
-        video_id = upload_video_to_youtube_gcs(video_url, youtube_title, youtube_description, category)
+        video_id = upload_video_to_youtube_gcs(local_path, youtube_title, youtube_description, category)
 
         return jsonify({
             "status": "ok",
