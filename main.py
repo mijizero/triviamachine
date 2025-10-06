@@ -2,7 +2,7 @@ import os
 import tempfile
 from flask import Flask, request, jsonify
 from google.cloud import storage, texttospeech
-from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip
+from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip, concatenate_videoclips
 from PIL import Image, ImageDraw, ImageFont
 from duckduckgo_search import DDGS
 import requests
@@ -55,7 +55,8 @@ def create_trivia_video(fact_text, output_gcs_path):
     """Create trivia video with dynamic DuckDuckGo background, TTS audio, gold text."""
     with tempfile.TemporaryDirectory() as tmpdir:
         # --- Fetch background from DuckDuckGo ---
-        results = ddg_images(fact_text, max_results=1)
+        with DDGS() as ddgs:
+            results = list(ddgs.images(fact_text, max_results=1))
         if results:
             img_url = results[0]["image"]
             response = requests.get(img_url)
@@ -102,7 +103,7 @@ def create_trivia_video(fact_text, output_gcs_path):
         num_pages = len(pages)
         per_page_dur = audio_duration / num_pages
 
-        # Build clips
+        # Build clips (show each text sequentially)
         clips = []
         for i, txt in enumerate(pages):
             dur = max(0.3, per_page_dur)
@@ -125,7 +126,6 @@ def create_trivia_video(fact_text, output_gcs_path):
             clips.append(clip)
 
         # Combine into final video (sequential pages)
-        from moviepy.editor import concatenate_videoclips
         video_clip = concatenate_videoclips(clips).set_audio(audio_clip)
 
         output_path = os.path.join(tmpdir, "output.mp4")
