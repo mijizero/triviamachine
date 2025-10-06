@@ -198,7 +198,6 @@ def upload_video_to_youtube_gcs(gcs_path, title, description, category, tags=Non
     creds = get_youtube_creds_from_secret()
     youtube = build("youtube", "v3", credentials=creds)
 
-    # Download video temporarily from GCS
     client = storage.Client()
     bucket_name, blob_name = gcs_path.replace("gs://", "").split("/", 1)
     bucket = client.bucket(bucket_name)
@@ -230,9 +229,6 @@ def upload_video_to_youtube_gcs(gcs_path, title, description, category, tags=Non
 
     os.remove(tmp_path)
     video_id = response["id"]
-    print("Upload complete! Video ID:", video_id)
-
-    # Add to playlist
     youtube.playlistItems().insert(
         part="snippet",
         body={
@@ -245,28 +241,150 @@ def upload_video_to_youtube_gcs(gcs_path, title, description, category, tags=Non
             }
         }
     ).execute()
-    print(f"Added video to playlist {playlist_id}")
-
     return video_id
 
 # -------------------------------
-# Core: Create Video
+# Create Trivia Video
 # -------------------------------
 def create_trivia_video(fact_text, output_gcs_path):
-    """Keep full function unchanged exactly as before"""
-    # ... function code remains the same as in your previous main.py
-    # Make sure output_path exists locally before uploading to GCS
-    # Upload to GCS
     with tempfile.TemporaryDirectory() as tmpdir:
-        # [full code unchanged; create video locally at output_path]
-        # upload to GCS
+        # --- Extract search query ---
+        search_query = extract_search_query(fact_text)
+        bg_path = os.path.join(tmpdir, "background.jpg")
+        valid_image = False
+        img_url = None
+
+        # DuckDuckGo
+        try:
+            with DDGS() as ddgs:
+                results = list(ddgs.images(search_query, max_results=1))
+            if results:
+                img_url = results[0].get("image")
+                if img_url:
+                    response = requests.get(img_url, stream=True, timeout=10)
+                    if response.status_code == 200 and "image" in response.headers.get("Content-Type", ""):
+                        with open(bg_path, "wb") as f:
+                            for chunk in response.iter_content(8192):
+                                f.write(chunk)
+                        valid_image = True
+        except Exception:
+            pass
+
+        # Pexels fallback
+        if not valid_image:
+            try:
+                simplified_query = " ".join(search_query.split()[:2])
+                headers = {"Authorization": "zXJ9dAVT3F0TLcEqMkGXtE5H8uePbhEvuq0kBnWnbq8McMpIKTQeWnDQ"}
+                r = requests.get(f"https://api.pexels.com/v1/search?query={simplified_query}&orientation=portrait&per_page=1", headers=headers, timeout=10)
+                if r.ok:
+                    data = r.json()
+                    if data.get("photos"):
+                        img_url = data["photos"][0]["src"]["original"]
+                        response = requests.get(img_url, stream=True, timeout=10)
+                        if response.status_code == 200 and "image" in response.headers.get("Content-Type", ""):
+                            with open(bg_path, "wb") as f:
+                                for chunk in response.iter_content(8192):
+                                    f.write(chunk)
+                            valid_image = True
+            except Exception:
+                pass
+
+        # Final fallback
+        if not valid_image:
+            fallback_url = "https://storage.googleapis.com/trivia-videos-output/background.jpg"
+            response = requests.get(fallback_url)
+            with open(bg_path, "wb") as f:
+                f.write(response.content)
+
+        # Resize/crop 1080x1920
+        target_size = (1080, 1920)
+        img = Image.open(bg_path).convert("RGB")
+        img_ratio = img.width / img.height
+        target_ratio = target_size[0] / target_size[1]
+        if img_ratio > target_ratio:
+            new_width = int(img.height * target_ratio)
+            left = (img.width - new_width) // 2
+            right = left + new_width
+            img = img.crop((left, 0, right, img.height))
+        else:
+            new_height = int(img.width / target_ratio)
+            top = (img.height - new_height) // 2
+            bottom = top + new_height
+            img = img.crop((0, top, img.width, bottom))
+        img = img.resize(target_size, Image.LANCZOS)
+        bg_path = os.path.join(tmpdir, "background_resized.jpg")
+        img.save(bg_path)
+
+        # TTS
+        audio_path = os.path.join(tmpdir, "audio.mp3")
+        synthesize_speech(fact_text, audio_path)
+        audio_clip = AudioFileClip(audio_path)
+        audio_duration = audio_clip.duration
+
+        # Text overlay
+        draw = ImageDraw.Draw(img)
+        font = ImageFont.truetype("Roboto-Regular.ttf", 45)
+        x_margin = int(img.width * 0.1)
+        max_width = int(img.width * 0.8)
+
+        words = fact_text.split()
+        lines = []
+        current_line = []
+        for word in words:
+            test_line = " ".join(current_line + [word])
+            bbox = draw.textbbox((0, 0), test_line, font=font)
+            w = bbox[2] - bbox[0]
+            if w <= max_width:
+                current_line.append(word)
+            else:
+                lines.append(" ".join(current_line))
+                current_line = [word]
+        if current_line:
+            lines.append(" ".join(current_line))
+
+        pages = []
+        for i in range(0, len(lines), 2):
+            page_text = "\n".join(lines[i:i + 2])
+            pages.append(page_text)
+
+        def estimate_read_time(text):
+            words = len(text.split())
+            commas = text.count(",")
+            periods = text.count(".")
+            total_words = words + commas + periods
+            return max(total_words / 2.0, 2)  # approximate duration per page
+
+        clips = []
+        for page_text in pages:
+            img_page = img.copy()
+            draw_page = ImageDraw.Draw(img_page)
+            y_text = 100
+            for line in page_text.split("\n"):
+                bbox = draw_page.textbbox((0, 0), line, font=font)
+                line_width = bbox[2] - bbox[0]
+                line_height = bbox[3] - bbox[1]
+                x_text = (img_page.width - line_width) // 2
+                draw_page.text((x_text, y_text), line, font=font, fill="white")
+                y_text += line_height + 20
+            page_path = os.path.join(tmpdir, f"page_{pages.index(page_text)}.jpg")
+            img_page.save(page_path)
+            clip_duration = estimate_read_time(page_text)
+            clip = ImageClip(page_path).set_duration(clip_duration)
+            clips.append(clip)
+
+        video = concatenate_videoclips(clips)
+        video = video.set_audio(audio_clip)
+        output_path = os.path.join(tmpdir, "trivia_video.mp4")
+        video.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", verbose=False, logger=None)
+
+        # Upload to GCS
         client = storage.Client()
         bucket_name, blob_path = output_gcs_path.replace("gs://", "").split("/", 1)
         bucket = client.bucket(bucket_name)
         blob = bucket.blob(blob_path)
         blob.upload_from_filename(output_path)
 
-        return f"https://storage.googleapis.com/{bucket_name}/{blob.name}", output_path  # Return local path too
+        return f"https://storage.googleapis.com/{bucket_name}/{blob.name}"
 
 # -------------------------------
 # Flask Endpoint
@@ -279,20 +397,20 @@ def generate_endpoint():
         output_gcs_path = data.get("output") or os.environ.get("OUTPUT_GCS") or "gs://trivia-videos-output/output.mp4"
 
         # Create video
-        video_url, local_path = create_trivia_video(fact, output_gcs_path)
+        video_url = create_trivia_video(fact, output_gcs_path)
 
         # Infer category and generate randomized title
         category = data.get("category") or infer_category_from_fact(fact)
         title_options = [
-            "Did you know?", "Trivia Time!", "Quick Fun Fact?", "Can You Guess This?",
-            "Learn Something!", "Well Who Knew?", "Wow Really?", "Fun Fact Alert?",
+            "Did you know?", "Trivia Time!", "Quick Fun Fact!", "Can You Guess This?",
+            "Learn Something!", "Well Who Knew?", "Wow Really?", "Fun Fact Alert!",
             "Now You Know!", "Not Bad!", "Mind-Blowing Fact!"
         ]
         youtube_title = random.choice(title_options)
         youtube_description = f"{fact} Did you get it right? What do you think of the fun fact? Now you know! See you at the comments!"
 
         # Upload to YouTube
-        video_id = upload_video_to_youtube_gcs(local_path, youtube_title, youtube_description, category)
+        video_id = upload_video_to_youtube_gcs(video_url, youtube_title, youtube_description, category)
 
         return jsonify({
             "status": "ok",
