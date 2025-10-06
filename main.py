@@ -190,7 +190,6 @@ PLAYLIST_MAP = {
 }
 
 import re
-
 def sanitize_for_youtube(text, max_len=100):
     if not text:
         return ""
@@ -244,9 +243,7 @@ def upload_video_to_youtube_gcs(gcs_path, title, description, category, tags=Non
 
         youtube.playlistItems().insert(
             part="snippet",
-            body={
-                "snippet":{"playlistId":playlist_id,"resourceId":{"kind":"youtube#video","videoId":video_id}}
-            }
+            body={"snippet":{"playlistId":playlist_id,"resourceId":{"kind":"youtube#video","videoId":video_id}}}
         ).execute()
 
         os.remove(tmp_path)
@@ -259,7 +256,7 @@ def upload_video_to_youtube_gcs(gcs_path, title, description, category, tags=Non
 # -------------------------------
 # Core: Create Video with Text
 # -------------------------------
-def create_trivia_video_with_text(fact_text, output_gcs_path="gs://trivia-videos-output/output.mp4"):
+def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/output.mp4"):
     with tempfile.TemporaryDirectory() as tmpdir:
         search_query = extract_search_query(fact_text)
         bg_path = os.path.join(tmpdir,"background.jpg")
@@ -360,30 +357,47 @@ def create_trivia_video_with_text(fact_text, output_gcs_path="gs://trivia-videos
 # -------------------------------
 # Flask Endpoint
 # -------------------------------
-@app.route("/generate",methods=["POST"])
+@app.route("/generate", methods=["POST"])
 def generate_endpoint():
     try:
-        data=request.get_json(silent=True) or {}
-        fact=data.get("fact") or get_unique_fact()
-        category=data.get("category") or infer_category_from_fact(fact)
+        data = request.get_json(silent=True) or {}
+        # Use provided fact or generate a new unique one
+        fact = data.get("fact") or get_unique_fact()
+        category = data.get("category") or infer_category_from_fact(fact)
 
-        output_gcs_path="gs://trivia-videos-output/output.mp4"
-        video_gs_url,video_https_url=create_trivia_video_with_text(fact,output_gcs_path)
+        # Output path in GCS
+        output_gcs_path = "gs://trivia-videos-output/output.mp4"
+        video_gs_url, video_https_url = create_trivia_video(fact, output_gcs_path)
 
-        title_options=[
-            "Did you know?","Trivia Time!","Quick Fun Fact!","Can You Guess This?",
-            "Learn Something!","Well Who Knew?","Wow Really?","Fun Fact Alert!",
-            "Now You Know!","Not Bad!","Mind-Blowing Fact!"
+        # Generate YouTube title and description
+        title_options = [
+            "Did you know?", "Trivia Time!", "Quick Fun Fact!", "Can You Guess This?",
+            "Learn Something!", "Well Who Knew?", "Wow Really?", "Fun Fact Alert!",
+            "Now You Know!", "Not Bad!", "Mind-Blowing Fact!"
         ]
-        youtube_title=sanitize_for_youtube(random.choice(title_options),max_len=100)
-        youtube_description=sanitize_for_youtube(fact,max_len=5000)
+        youtube_title = sanitize_for_youtube(random.choice(title_options), max_len=100)
+        youtube_description = sanitize_for_youtube(fact, max_len=5000)
 
-        video_id=upload_video_to_youtube_gcs(video_gs_url,youtube_title,youtube_description,category)
-        return jsonify({"status":"ok","fact":fact,"video_gcs":video_https_url,"youtube_video_id":video_id})
+        # Upload to YouTube
+        video_id = upload_video_to_youtube_gcs(
+            video_gs_url,
+            youtube_title,
+            youtube_description,
+            category
+        )
+
+        return jsonify({
+            "status": "ok",
+            "fact": fact,
+            "video_gcs": video_https_url,
+            "youtube_video_id": video_id
+        })
+
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return jsonify({"status":"error","message":str(e)}),500
+        return jsonify({"status": "error", "message": str(e)}), 500
 
-if __name__=="__main__":
-    app.run(host="0.0.0.0",port=8080)
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8080)
