@@ -397,7 +397,7 @@ def generate_endpoint():
     try:
         data = request.get_json(silent=True) or {}
         fact = data.get("fact") or get_unique_fact()
-        output_gcs_path = data.get("output") or os.environ.get("OUTPUT_GCS") or "gs://trivia-videos-output/output.mp4"
+        output_gcs_path = "gs://trivia-videos-output/output.mp4"
 
         # Create video
         video_url = create_trivia_video(fact, output_gcs_path)
