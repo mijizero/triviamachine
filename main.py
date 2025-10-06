@@ -99,11 +99,28 @@ def get_dynamic_fact():
 vertexai.init(project="trivia-machine-472207", location="asia-southeast1")
 
 def extract_search_query(fact_text):
-    """Use Gemini to extract a short search keyword/phrase from the fact."""
+    """Extract a clean and relevant search keyword/phrase from the generated fact text."""
+    # Clean up the fact text to make it image-search friendly
+    fact_clean = fact_text.replace("Did you know", "").replace("did you know", "").replace("?", "")
+    fact_clean = fact_clean.strip()
+
+    # Ask Gemini to summarize this into a 2-5 word subject keyword
     model = GenerativeModel("gemini-2.5-flash")
-    prompt = f"Extract the main subject or keyword to search an image for this trivia: {fact_text}"
-    response = model.generate_content(prompt)
-    return response.text.strip() if response and response.text else fact_text
+    prompt = (
+        "From the following trivia fact, extract only the main subject or topic "
+        "that best represents the visual focus for an image search. "
+        "Return only the concise keyword or phrase, without extra words or punctuation.\n\n"
+        f"Fact: {fact_clean}"
+    )
+    try:
+        response = model.generate_content(prompt)
+        text = response.text.strip() if response and response.text else ""
+        # If Gemini ever outputs a long explanation, fallback to first 5 words of fact
+        if len(text.split()) > 6:
+            text = " ".join(fact_clean.split()[:5])
+        return text or fact_clean
+    except Exception:
+        return fact_clean
 
 # -------------------------------
 # Helpers
