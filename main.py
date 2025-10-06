@@ -55,11 +55,9 @@ def create_trivia_video(fact_text, output_gcs_path):
     """Create trivia video with dynamic DuckDuckGo background, TTS audio, gold text."""
     with tempfile.TemporaryDirectory() as tmpdir:
         # --- Fetch background from DuckDuckGo ---
-        with DDGS() as ddgs:
-            results = ddgs.images(fact_text, max_results=1)
-            img_url = results[0]["image"] if results else None
-
-        if img_url:
+        results = ddg_images(fact_text, max_results=1)
+        if results:
+            img_url = results[0]["image"]
             response = requests.get(img_url)
             bg_path = os.path.join(tmpdir, "background.jpg")
             with open(bg_path, "wb") as f:
@@ -126,8 +124,10 @@ def create_trivia_video(fact_text, output_gcs_path):
             clip = ImageClip(page_path).set_duration(dur)
             clips.append(clip)
 
-        # Combine into final video
-        video_clip = CompositeVideoClip(clips).set_audio(audio_clip)
+        # Combine into final video (sequential pages)
+        from moviepy.editor import concatenate_videoclips
+        video_clip = concatenate_videoclips(clips).set_audio(audio_clip)
+
         output_path = os.path.join(tmpdir, "output.mp4")
         video_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac")
 
