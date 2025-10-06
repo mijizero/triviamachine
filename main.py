@@ -186,30 +186,60 @@ def synthesize_speech(text, output_path):
 # Core: Create Video
 # -------------------------------
 def create_trivia_video(fact_text, output_gcs_path):
-    """Create Shorts-format trivia video with DuckDuckGo background, TTS audio, gold text."""
+    """Create Shorts-format trivia video with image (DuckDuckGo → Pexels fallback), TTS audio, gold text."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        # --- Determine better image search query via Gemini ---
         search_query = extract_search_query(fact_text)
 
-        # --- Fetch background from DuckDuckGo safely ---
         bg_path = os.path.join(tmpdir, "background.jpg")
         valid_image = False
+        img_url = None
 
-        with DDGS() as ddgs:
-            results = list(ddgs.images(search_query, max_results=1))
+        # 1️⃣ Try DuckDuckGo first
+        try:
+            with DDGS() as ddgs:
+                results = list(ddgs.images(search_query, max_results=1))
+            if results:
+                img_url = results[0].get("image")
+                if img_url:
+                    response = requests.get(img_url, stream=True, timeout=10)
+                    if response.status_code == 200 and "image" in response.headers.get("Content-Type", ""):
+                        with open(bg_path, "wb") as f:
+                            for chunk in response.iter_content(8192):
+                                f.write(chunk)
+                        valid_image = True
+        except Exception as e:
+            print("DuckDuckGo failed:", e)
 
-        if results:
-            img_url = results[0].get("image")
+        # 2️⃣ If DuckDuckGo fails, use Pexels fallback
+        if not valid_image:
             try:
-                response = requests.get(img_url, stream=True, timeout=10)
-                if response.status_code == 200 and "image" in response.headers.get("Content-Type", ""):
-                    with open(bg_path, "wb") as f:
-                        for chunk in response.iter_content(8192):
-                            f.write(chunk)
-                    valid_image = True
-            except Exception:
-                valid_image = False
+                # --- Simplify search query for Pexels ---
+                simplified_query = search_query.lower()
+                for word in ["in", "of", "the", "from", "at", "on", "a", "an"]:
+                    simplified_query = simplified_query.replace(f" {word} ", " ")
+                simplified_query = simplified_query.strip().split()
+                simplified_query = simplified_query[:2]  # keep only first 2 words
+                simplified_query = " ".join(simplified_query)
+                if len(simplified_query) < 2:
+                    simplified_query = search_query  # fallback to original if too short
 
+                headers = {"Authorization": "zXJ9dAVT3F0TLcEqMkGXtE5H8uePbhEvuq0kBnWnbq8McMpIKTQeWnDQ"}
+                pexels_url = f"https://api.pexels.com/v1/search?query={simplified_query}&orientation=portrait&per_page=1"
+                r = requests.get(pexels_url, headers=headers, timeout=10)
+                if r.ok:
+                    data = r.json()
+                    if data.get("photos"):
+                        img_url = data["photos"][0]["src"]["original"]
+                        response = requests.get(img_url, stream=True, timeout=10)
+                        if response.status_code == 200 and "image" in response.headers.get("Content-Type", ""):
+                            with open(bg_path, "wb") as f:
+                                for chunk in response.iter_content(8192):
+                                    f.write(chunk)
+                            valid_image = True
+            except Exception as e:
+                print("Pexels fallback failed:", e)
+
+        # 3️⃣ Final fallback
         if not valid_image:
             fallback_url = "https://storage.googleapis.com/trivia-videos-output/background.jpg"
             response = requests.get(fallback_url)
