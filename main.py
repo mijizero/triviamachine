@@ -17,8 +17,6 @@ app = Flask(__name__)
 vertexai.init(project=os.getenv("trivia-machine-472207"), location="asia-southeast1")
 gemini_model = GenerativeModel("gemini-2.5-flash")
 
-vertexai.init(project=os.environ["GOOGLE_CLOUD_PROJECT"], location="us-central1")
-
 def extract_search_query(fact_text):
     """Use Gemini to extract a short search keyword/phrase from the fact."""
     model = GenerativeModel("gemini-1.5-flash")
