@@ -187,68 +187,117 @@ PLAYLIST_MAP = {
     "tech": "PLdQe9EVdFVKZkoqcmP_Tz3ypCfDy1Z_14"
 }
 
+import re
+
+def sanitize_for_youtube(text, max_len=100):
+    """Remove problematic characters for YouTube title/description."""
+    if not text:
+        return ""
+    # Remove control characters, limit length
+    text = re.sub(r"[\x00-\x1F\x7F]", "", text)
+    text = text.replace("\n", " ").replace("\r", " ")
+    text = text.strip()
+    if len(text) > max_len:
+        text = text[:max_len].rsplit(" ", 1)[0]  # truncate at last word
+    return text
+
 def upload_video_to_youtube_gcs(gcs_path, title, description, category, tags=None, privacy="public"):
-    category_map = {
-        "pop culture": {"categoryId": "24"},
-        "sports": {"categoryId": "17"},
-        "history": {"categoryId": "22"},
-        "science": {"categoryId": "28"},
-        "tech": {"categoryId": "28"},
-    }
+    try:
+        print("Preparing YouTube upload...")
+        print("Original GCS Path:", gcs_path)
 
-    category_key = category.lower()
-    category_info = category_map.get(category_key, category_map["pop culture"])
-    playlist_id = PLAYLIST_MAP.get(category_key, PLAYLIST_MAP["pop culture"])
+        # --- Sanitize title/description ---
+        title_safe = sanitize_for_youtube(title, max_len=100)
+        description_safe = sanitize_for_youtube(description, max_len=5000)
 
-    creds = get_youtube_creds_from_secret()
-    youtube = build("youtube", "v3", credentials=creds)
+        print("Sanitized Title:", title_safe)
+        print("Sanitized Description (first 200 chars):", description_safe[:200])
+        print("Category:", category)
 
-    client = storage.Client()
-    bucket_name, blob_name = gcs_path.replace("gs://", "").split("/", 1)
-    bucket = client.bucket(bucket_name)
-    blob = bucket.blob(blob_name)
-    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
-        blob.download_to_filename(tmp.name)
-        tmp_path = tmp.name
+        category_map = {
+            "pop culture": {"categoryId": "24"},
+            "sports": {"categoryId": "17"},
+            "history": {"categoryId": "22"},
+            "science": {"categoryId": "28"},
+            "tech": {"categoryId": "28"},
+        }
 
-    media_body = MediaFileUpload(tmp_path, chunksize=-1, resumable=True)
-    request = youtube.videos().insert(
-        part="snippet,status",
-        body={
-            "snippet": {
-                "title": title,
-                "description": description,
-                "tags": tags or ["trivia", "quiz", "fun"],
-                "categoryId": category_info["categoryId"]
+        category_key = category.lower()
+        category_info = category_map.get(category_key, category_map["pop culture"])
+        playlist_id = PLAYLIST_MAP.get(category_key, PLAYLIST_MAP["pop culture"])
+
+        creds = get_youtube_creds_from_secret()
+        youtube = build("youtube", "v3", credentials=creds)
+
+        # --- GCS parsing ---
+        if not gcs_path.startswith("gs://"):
+            raise ValueError(f"Invalid GCS path: {gcs_path}")
+        bucket_name, blob_name = gcs_path[5:].split("/", 1)
+        print("Bucket:", bucket_name, "Blob:", blob_name)
+
+        client = storage.Client()
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(blob_name)
+
+        # --- Download video locally ---
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+            blob.download_to_filename(tmp.name)
+            tmp_path = tmp.name
+
+        # Ensure tmp_path is safe
+        tmp_path_safe = tmp_path.replace("_", "-")
+        if tmp_path_safe != tmp_path:
+            os.rename(tmp_path, tmp_path_safe)
+            tmp_path = tmp_path_safe
+
+        print("Temp video path:", tmp_path)
+
+        media_body = MediaFileUpload(tmp_path, chunksize=-1, resumable=True)
+        request = youtube.videos().insert(
+            part="snippet,status",
+            body={
+                "snippet": {
+                    "title": title_safe,
+                    "description": description_safe,
+                    "tags": tags or ["trivia", "quiz", "fun"],
+                    "categoryId": category_info["categoryId"]
+                },
+                "status": {"privacyStatus": privacy}
             },
-            "status": {"privacyStatus": privacy}
-        },
-        media_body=media_body
-    )
+            media_body=media_body
+        )
 
-    response = None
-    while response is None:
-        status, response = request.next_chunk()
-        if status:
-            print(f"Upload progress: {int(status.progress() * 100)}%")
+        response = None
+        while response is None:
+            status, response = request.next_chunk()
+            if status:
+                print(f"Upload progress: {int(status.progress() * 100)}%")
 
-    os.remove(tmp_path)
-    video_id = response["id"]
+        video_id = response["id"]
+        print("Video uploaded. ID:", video_id)
 
-    # Add video to playlist
-    youtube.playlistItems().insert(
-        part="snippet",
-        body={
-            "snippet": {
-                "playlistId": playlist_id,
-                "resourceId": {
-                    "kind": "youtube#video",
-                    "videoId": video_id
+        # --- Add to playlist ---
+        youtube.playlistItems().insert(
+            part="snippet",
+            body={
+                "snippet": {
+                    "playlistId": playlist_id,
+                    "resourceId": {
+                        "kind": "youtube#video",
+                        "videoId": video_id
+                    }
                 }
             }
-        }
-    ).execute()
-    return video_id
+        ).execute()
+
+        # --- Cleanup ---
+        os.remove(tmp_path)
+
+        return video_id
+
+    except Exception as e:
+        print("ERROR in YouTube upload:", str(e))
+        raise
 
 # -------------------------------
 # Create Trivia Video
@@ -369,32 +418,38 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
         return upload_to_gcs(output_path, output_gcs_path)
 
 # -------------------------------
-# Flask Endpoint
+# Flask Endpoint (Safe for YouTube)
 # -------------------------------
 @app.route("/generate", methods=["POST"])
 def generate_endpoint():
     try:
+        # --- Get POST data or fallback ---
         data = request.get_json(silent=True) or {}
         fact = data.get("fact") or get_unique_fact()
         category = data.get("category") or infer_category_from_fact(fact)
 
-        # Hardcoded GCS output path
+        # --- Sanitize fact for title/description ---
+        safe_fact = sanitize_for_youtube(fact, max_len=5000)  # safe for description
+
+        # --- Hardcoded GCS output path ---
         output_gcs_path = "gs://trivia-videos-output/output.mp4"
 
-        # Create video
+        # --- Create video and upload to GCS ---
         video_url = create_trivia_video(fact, output_gcs_path)
 
-        # Generate randomized YouTube title
+        # --- Generate randomized YouTube title ---
         title_options = [
             "Did you know?", "Trivia Time!", "Quick Fun Fact!", "Can You Guess This?",
             "Learn Something!", "Well Who Knew?", "Wow Really?", "Fun Fact Alert!",
             "Now You Know!", "Not Bad!", "Mind-Blowing Fact!"
         ]
-        youtube_title = random.choice(title_options)
-        youtube_description = f"{fact} Did you get it right? What do you think of the fun fact? Now you know! See you at the comments!"
+        youtube_title = sanitize_for_youtube(random.choice(title_options), max_len=100)
+        youtube_description = safe_fact + " Did you get it right? What do you think of the fun fact? Now you know! See you at the comments!"
 
-        # Upload to YouTube
-        video_id = upload_video_to_youtube_gcs(video_url, youtube_title, youtube_description, category)
+        # --- Upload to YouTube ---
+        video_id = upload_video_to_youtube_gcs(
+            video_url, youtube_title, youtube_description, category
+        )
 
         return jsonify({
             "status": "ok",
@@ -404,6 +459,9 @@ def generate_endpoint():
         })
 
     except Exception as e:
+        # Log the error with stack trace for debugging
+        import traceback
+        traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
 
 if __name__ == "__main__":
