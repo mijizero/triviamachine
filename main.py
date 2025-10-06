@@ -15,11 +15,10 @@ app = Flask(__name__)
 # Gemini Setup
 # -------------------------------
 vertexai.init(project=os.getenv("trivia-machine-472207"), location="asia-southeast1")
-gemini_model = GenerativeModel("gemini-2.5-flash")
 
 def extract_search_query(fact_text):
     """Use Gemini to extract a short search keyword/phrase from the fact."""
-    model = GenerativeModel("gemini-1.5-flash")
+    model = GenerativeModel("gemini-2.5-flash")
     prompt = f"Extract the main subject or keyword to search an image for this trivia: {fact_text}"
     response = model.generate_content(prompt)
     return response.text.strip() if response and response.text else fact_text
