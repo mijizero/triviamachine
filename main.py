@@ -100,11 +100,9 @@ vertexai.init(project="trivia-machine-472207", location="asia-southeast1")
 
 def extract_search_query(fact_text):
     """Extract a clean and relevant search keyword/phrase from the generated fact text."""
-    # Clean up the fact text to make it image-search friendly
     fact_clean = fact_text.replace("Did you know", "").replace("did you know", "").replace("?", "")
     fact_clean = fact_clean.strip()
 
-    # Ask Gemini to summarize this into a 2-5 word subject keyword
     model = GenerativeModel("gemini-2.5-flash")
     prompt = (
         "From the following trivia fact, extract only the main subject or topic "
@@ -115,7 +113,6 @@ def extract_search_query(fact_text):
     try:
         response = model.generate_content(prompt)
         text = response.text.strip() if response and response.text else ""
-        # If Gemini ever outputs a long explanation, fallback to first 5 words of fact
         if len(text.split()) > 6:
             text = " ".join(fact_clean.split()[:5])
         return text or fact_clean
@@ -125,7 +122,6 @@ def extract_search_query(fact_text):
 # -------------------------------
 # Helpers
 # -------------------------------
-
 def upload_to_gcs(local_path, gcs_path):
     """Upload file to GCS and return public URL."""
     client = storage.Client()
@@ -185,7 +181,6 @@ def create_trivia_video(fact_text, output_gcs_path):
                 valid_image = False
 
         if not valid_image:
-            # fallback background
             fallback_url = "https://storage.googleapis.com/trivia-videos-output/background.jpg"
             response = requests.get(fallback_url)
             with open(bg_path, "wb") as f:
@@ -198,13 +193,11 @@ def create_trivia_video(fact_text, output_gcs_path):
         target_ratio = target_size[0] / target_size[1]
 
         if img_ratio > target_ratio:
-            # too wide → crop sides
             new_width = int(img.height * target_ratio)
             left = (img.width - new_width) // 2
             right = left + new_width
             img = img.crop((left, 0, right, img.height))
         else:
-            # too tall → crop top/bottom
             new_height = int(img.width / target_ratio)
             top = (img.height - new_height) // 2
             bottom = top + new_height
@@ -222,13 +215,13 @@ def create_trivia_video(fact_text, output_gcs_path):
 
         # --- Prepare text ---
         draw = ImageDraw.Draw(img)
-        font = ImageFont.truetype("Roboto-Regular.ttf", 50)
+        font = ImageFont.truetype("Roboto-Regular.ttf", 45)  # reduced slightly
         x_margin = int(img.width * 0.1)
         max_width = int(img.width * 0.8)
 
-        # Split text into pages
+        # --- Split text into 2-line pages ---
         words = fact_text.split()
-        pages = []
+        lines = []
         current_line = []
         for word in words:
             test_line = " ".join(current_line + [word])
@@ -237,10 +230,15 @@ def create_trivia_video(fact_text, output_gcs_path):
             if w <= max_width:
                 current_line.append(word)
             else:
-                pages.append(" ".join(current_line))
+                lines.append(" ".join(current_line))
                 current_line = [word]
         if current_line:
-            pages.append(" ".join(current_line))
+            lines.append(" ".join(current_line))
+
+        pages = []
+        for i in range(0, len(lines), 2):
+            page_text = "\n".join(lines[i:i + 2])
+            pages.append(page_text)
 
         num_pages = len(pages)
         per_page_dur = audio_duration / num_pages
@@ -251,18 +249,20 @@ def create_trivia_video(fact_text, output_gcs_path):
             dur = max(0.5, per_page_dur)
             page_img = img.copy()
             draw_page = ImageDraw.Draw(page_img)
-            bbox = draw_page.textbbox((0, 0), txt, font=font)
+            bbox = draw_page.multiline_textbbox((0, 0), txt, font=font, spacing=15)
             text_w, text_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
             x = (page_img.width - text_w) / 2
             y = (page_img.height - text_h) / 2
 
-            draw_page.text(
+            draw_page.multiline_text(
                 (x, y),
                 txt,
                 font=font,
                 fill="#FFD700",
+                spacing=15,
                 stroke_width=4,
                 stroke_fill="black",
+                align="center"
             )
 
             page_path = os.path.join(tmpdir, f"page_{i}.png")
