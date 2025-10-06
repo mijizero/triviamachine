@@ -199,7 +199,7 @@ def generate_endpoint():
     try:
         data = request.get_json(silent=True) or {}
         fact = data.get("fact") or os.environ.get("DEFAULT_FACT") or \
-            "Honey never spoils. Archaeologists have found edible honey in ancient Egyptian tombs over 3000 years old."
+            "Giraffes are 30 times more likely to get hit by lightning than people."
         output_gcs_path = data.get("output") or os.environ.get("OUTPUT_GCS") or \
             "gs://trivia-videos-output/output.mp4"
 
