@@ -124,6 +124,8 @@ def extract_search_query(fact_text):
 # -------------------------------
 def upload_to_gcs(local_path, gcs_path):
     client = storage.Client()
+    if gcs_path.endswith("/"):
+        gcs_path += "output.mp4"  # force filename if empty
     bucket_name, blob_path = gcs_path.replace("gs://", "").split("/", 1)
     bucket = client.bucket(bucket_name)
     blob = bucket.blob(blob_path)
@@ -232,6 +234,8 @@ def upload_video_to_youtube_gcs(gcs_path, title, description, category, tags=Non
 
     os.remove(tmp_path)
     video_id = response["id"]
+
+    # Add video to playlist
     youtube.playlistItems().insert(
         part="snippet",
         body={
@@ -272,25 +276,6 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
                         valid_image = True
         except Exception:
             pass
-
-        # Pexels fallback
-        if not valid_image:
-            try:
-                simplified_query = " ".join(search_query.split()[:2])
-                headers = {"Authorization": "zXJ9dAVT3F0TLcEqMkGXtE5H8uePbhEvuq0kBnWnbq8McMpIKTQeWnDQ"}
-                r = requests.get(f"https://api.pexels.com/v1/search?query={simplified_query}&orientation=portrait&per_page=1", headers=headers, timeout=10)
-                if r.ok:
-                    data = r.json()
-                    if data.get("photos"):
-                        img_url = data["photos"][0]["src"]["original"]
-                        response = requests.get(img_url, stream=True, timeout=10)
-                        if response.status_code == 200 and "image" in response.headers.get("Content-Type", ""):
-                            with open(bg_path, "wb") as f:
-                                for chunk in response.iter_content(8192):
-                                    f.write(chunk)
-                            valid_image = True
-            except Exception:
-                pass
 
         # Final fallback
         if not valid_image:
@@ -380,15 +365,8 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
         output_path = os.path.join(tmpdir, "trivia_video.mp4")
         video.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", verbose=False, logger=None)
 
-        # Upload to GCS
-        client = storage.Client()
-        bucket_name, blob_path = output_gcs_path.replace("gs://", "").split("/", 1)
-        bucket = client.bucket(bucket_name)
-        blob = bucket.blob(blob_path)
-        blob.upload_from_filename(output_path)
-
-        # Return **public HTTPS URL**
-        return f"https://storage.googleapis.com/{bucket_name}/{blob_path}"
+        # Upload to GCS and ensure public URL
+        return upload_to_gcs(output_path, output_gcs_path)
 
 # -------------------------------
 # Flask Endpoint
@@ -396,33 +374,27 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
 @app.route("/generate", methods=["POST"])
 def generate_endpoint():
     try:
-        # --- Get POST data or fallback ---
         data = request.get_json(silent=True) or {}
         fact = data.get("fact") or get_unique_fact()
         category = data.get("category") or infer_category_from_fact(fact)
 
-        # --- Hardcoded GCS output path ---
+        # Hardcoded GCS output path
         output_gcs_path = "gs://trivia-videos-output/output.mp4"
 
-        # --- Create video and upload to GCS ---
+        # Create video
         video_url = create_trivia_video(fact, output_gcs_path)
 
-        # --- Generate randomized YouTube title ---
+        # Generate randomized YouTube title
         title_options = [
             "Did you know?", "Trivia Time!", "Quick Fun Fact!", "Can You Guess This?",
             "Learn Something!", "Well Who Knew?", "Wow Really?", "Fun Fact Alert!",
             "Now You Know!", "Not Bad!", "Mind-Blowing Fact!"
         ]
         youtube_title = random.choice(title_options)
-        youtube_description = (
-            f"{fact} Did you get it right? What do you think of the fun fact? "
-            "Now you know! See you at the comments!"
-        )
+        youtube_description = f"{fact} Did you get it right? What do you think of the fun fact? Now you know! See you at the comments!"
 
-        # --- Upload to YouTube ---
-        video_id = upload_video_to_youtube_gcs(
-            video_url, youtube_title, youtube_description, category
-        )
+        # Upload to YouTube
+        video_id = upload_video_to_youtube_gcs(video_url, youtube_title, youtube_description, category)
 
         return jsonify({
             "status": "ok",
