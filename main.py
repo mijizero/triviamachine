@@ -377,7 +377,8 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
         for i in range(0,len(lines),2):
             pages.append("\n".join(lines[i:i+2]))
 
-        per_page_dur=max(audio_duration/len(pages),0.5)
+        # Adjusted for TTS speaking rate 0.9 (≈11% slower)
+        per_page_dur = max((audio_duration / len(pages)) * 1.11, 0.5)    
         clips=[]
         for i,page_text in enumerate(pages):
             page_img=img.copy()
@@ -386,7 +387,7 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             text_w,text_h=bbox[2]-bbox[0],bbox[3]-bbox[1]
             x=(page_img.width-text_w)/2
             y=(page_img.height-text_h)/2
-            draw_page.multiline_text((x,y),page_text,font=font,fill="#FFD700",spacing=15,stroke_width=10,stroke_fill="black",align="center")
+            draw_page.multiline_text((x,y),page_text,font=font,fill="#FFD700",spacing=15,stroke_width=25,stroke_fill="black",align="center")
             page_path=os.path.join(tmpdir,f"page_{i}.png")
             page_img.save(page_path)
             clip=ImageClip(page_path).set_duration(per_page_dur)
