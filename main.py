@@ -141,8 +141,8 @@ def synthesize_speech(text, output_path):
     synthesis_input = texttospeech.SynthesisInput(text=text)
     voice = texttospeech.VoiceSelectionParams(
         language_code="en-AU",
-        name="en-AU-Neural2-C",
-        ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
+        name="en-AU-Neural2-D",
+        ssml_gender=texttospeech.SsmlVoiceGender.MALE
     )
     audio_config = texttospeech.AudioConfig(
         audio_encoding=texttospeech.AudioEncoding.MP3,
