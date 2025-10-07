@@ -141,13 +141,13 @@ def synthesize_speech(text, output_path):
     synthesis_input = texttospeech.SynthesisInput(text=text)
     voice = texttospeech.VoiceSelectionParams(
         language_code="en-AU",
-        name="en-AU-Neural2-D",
-        ssml_gender=texttospeech.SsmlVoiceGender.MALE
+        name="en-AU-Neural2-C",
+        ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
     )
     audio_config = texttospeech.AudioConfig(
         audio_encoding=texttospeech.AudioEncoding.MP3,
-        speaking_rate=1.0,
-        pitch=2.0,
+        speaking_rate=0.9,
+        pitch=1.0,
         volume_gain_db=2.0
     )
     response = client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
