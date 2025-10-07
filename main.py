@@ -24,22 +24,31 @@ app = Flask(__name__)
 vertexai.init(project="trivia-machine-472207", location="asia-southeast1")
 
 # -------------------------------
-# Dynamic Fact
+# Dynamic Fact (Firestore version)
 # -------------------------------
-FACT_CACHE_PATH = "/tmp/last_facts.txt"
+from google.cloud import firestore
 
-def load_recent_facts():
-    if os.path.exists(FACT_CACHE_PATH):
-        with open(FACT_CACHE_PATH, "r") as f:
-            return [line.strip() for line in f.readlines() if line.strip()]
-    return []
+db = firestore.Client()
+FACTS_COLLECTION = "facts_history"
+
+def load_recent_facts(limit=10):
+    try:
+        docs = db.collection(FACTS_COLLECTION) \
+            .order_by("timestamp", direction=firestore.Query.DESCENDING) \
+            .limit(limit).stream()
+        return [d.get("fact") for d in docs if d.get("fact")]
+    except Exception as e:
+        print("Error loading facts from Firestore:", str(e))
+        return []
 
 def save_fact(fact_text):
-    facts = load_recent_facts()
-    facts.append(fact_text)
-    facts = facts[-10:]
-    with open(FACT_CACHE_PATH, "w") as f:
-        f.write("\n".join(facts))
+    try:
+        db.collection(FACTS_COLLECTION).add({
+            "fact": fact_text,
+            "timestamp": firestore.SERVER_TIMESTAMP
+        })
+    except Exception as e:
+        print("Error saving fact to Firestore:", str(e))
 
 def get_unique_fact():
     recent = load_recent_facts()
