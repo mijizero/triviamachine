@@ -28,7 +28,10 @@ vertexai.init(project="trivia-machine-472207", location="asia-southeast1")
 # -------------------------------
 from google.cloud import firestore
 
-db = firestore.Client()
+# Force Firestore client to use correct project
+firestore_client = firestore.Client(project="trivia-machine-472207", database="(default)")
+
+db = firestore_client
 FACTS_COLLECTION = "facts_history"
 
 def load_recent_facts(limit=10):
