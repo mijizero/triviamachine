@@ -362,7 +362,7 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             input=synthesis_input,
             voice=voice,
             audio_config=audio_config,
-            enable_time_pointing=[texttospeech.SynthesizeSpeechConfig.TimepointType.WORD]
+            enable_time_pointing=[texttospeech.TimepointType.WORD]
         )
         with open(audio_path, "wb") as out:
             out.write(response.audio_content)
