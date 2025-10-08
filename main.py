@@ -379,25 +379,58 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
         # -------------------------------
         # 🔧 Improved Timing Logic (per word + punctuation weighting)
         # -------------------------------
+        # This block tweaks per-page durations to better match TTS rhythm.
         total_words = len(words) if len(words) > 0 else 1
+        # Protect against zero audio_duration
+        if audio_duration <= 0:
+            audio_duration = max(0.01, sum(len(p.split()) for p in pages) / 3.0)
+
         words_per_sec = total_words / audio_duration
-        pause_weight = 0.12  # punctuation adds fractional time
-        min_page_dur = 0.6
+        # punctuation adds fractional time (per punctuation character)
+        punct_unit = 0.10   # base extra time per punctuation marker (tunable)
+        min_page_dur = 0.5  # minimum page duration
+
+        def page_rhythm_multiplier(text):
+            """Return multiplier based on punctuation, long words and commas."""
+            punc_count = sum(text.count(ch) for ch in [",", ".", ";", ":", "?", "!", "-", "\""])
+            long_word_count = sum(1 for w in text.split() if len(w) >= 8)
+            # Commas deserve a smaller additive pause, periods/?,! deserve larger
+            comma_count = text.count(",")
+            period_like = text.count(".") + text.count("?") + text.count("!")
+            # Build multiplier: base + punctuation influence + long-word influence
+            multiplier = 1.0 + (0.015 * long_word_count) + (0.025 * comma_count) + (0.06 * period_like) + (0.012 * punc_count)
+            return max(1.0, multiplier)
 
         weighted_durations = []
         for page in pages:
-            word_count = len(page.split())
-            punct_count = sum(page.count(ch) for ch in [",",".",";","?","!","-",":","\""])
+            word_count = len(page.replace("\n"," ").split())
             base_time = word_count / words_per_sec
-            weight_factor = 1 + (punct_count * pause_weight)
-            weighted_durations.append(base_time * weight_factor)
+            # apply rhythm multiplier
+            rhythm = page_rhythm_multiplier(page)
+            weighted = base_time * rhythm
+            weighted_durations.append(weighted)
 
         total_weighted = sum(weighted_durations)
         if total_weighted == 0:
-            per_page_durations = [max(min_page_dur, audio_duration / len(pages))] * len(pages)
+            # fallback: uniform
+            per_page_durations = [max(min_page_dur, audio_duration / max(1, len(pages)))] * len(pages)
         else:
-            scale_factor = audio_duration / total_weighted
-            per_page_durations = [max(min_page_dur, d * scale_factor) for d in weighted_durations]
+            scale = audio_duration / total_weighted
+            per_page_durations = [max(min_page_dur, d * scale) for d in weighted_durations]
+
+            # small correction to ensure sum equals audio_duration (distribute residual)
+            summed = sum(per_page_durations)
+            residual = audio_duration - summed
+            if abs(residual) > 1e-3:
+                # distribute residual proportionally to durations (prefer longer pages)
+                total_pos = sum(per_page_durations)
+                if total_pos <= 0:
+                    # spread evenly
+                    per_page_durations = [d + residual / len(per_page_durations) for d in per_page_durations]
+                else:
+                    per_page_durations = [d + (d / total_pos) * residual for d in per_page_durations]
+                # final clamp to min_page_dur
+                per_page_durations = [max(min_page_dur, d) for d in per_page_durations]
 
         # --- Page creation ---
         clips=[]
