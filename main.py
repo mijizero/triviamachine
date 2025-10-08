@@ -354,7 +354,7 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
 
         # --- Text overlay ---
         draw=ImageDraw.Draw(img)
-        font=ImageFont.truetype("Roboto-Regular.ttf",60)
+        font=ImageFont.truetype("Roboto-Regular.ttf",55)
         x_margin=int(img.width*0.1)
         max_width=int(img.width*0.8)
 
@@ -386,7 +386,7 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             text_w,text_h=bbox[2]-bbox[0],bbox[3]-bbox[1]
             x=(page_img.width-text_w)/2
             y=(page_img.height-text_h)/2
-            draw_page.multiline_text((x,y),page_text,font=font,fill="#FFD700",spacing=15,stroke_width=30,stroke_fill="black",align="center")
+            draw_page.multiline_text((x,y),page_text,font=font,fill="#FFD700",spacing=15,stroke_width=40,stroke_fill="black",align="center")
             page_path=os.path.join(tmpdir,f"page_{i}.png")
             page_img.save(page_path)
             clip=ImageClip(page_path).set_duration(per_page_dur)
