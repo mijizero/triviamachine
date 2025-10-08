@@ -294,15 +294,11 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
         # 2️⃣ Pexels fallback if DuckDuckGo failed
         if not valid_image:
             try:
-                # Simplify search query for Pexels
                 simplified_query = search_query.lower()
                 for word in ["in", "of", "the", "from", "at", "on", "a", "an"]:
                     simplified_query = simplified_query.replace(f" {word} ", " ")
-                simplified_query = simplified_query.strip().split()
-                simplified_query = simplified_query[:2]  # keep only first 2 words
-                simplified_query = " ".join(simplified_query)
-                if len(simplified_query) < 2:
-                    simplified_query = search_query  # fallback to original if too short
+                simplified_query = simplified_query.strip().split()[:2]
+                simplified_query = " ".join(simplified_query) or search_query
 
                 headers = {"Authorization": "zXJ9dAVT3F0TLcEqMkGXtE5H8uePbhEvuq0kBnWnbq8McMpIKTQeWnDQ"}
                 pexels_url = f"https://api.pexels.com/v1/search?query={simplified_query}&orientation=portrait&per_page=1"
@@ -346,59 +342,97 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
         bg_path=os.path.join(tmpdir,"background_resized.jpg")
         img.save(bg_path)
 
-        # --- TTS ---
-        audio_path=os.path.join(tmpdir,"audio.mp3")
-        synthesize_speech(fact_text,audio_path)
-        audio_clip=AudioFileClip(audio_path)
-        audio_duration=audio_clip.duration
+        # --- TTS with word-level timings ---
+        audio_path = os.path.join(tmpdir, "audio.mp3")
+        client = texttospeech.TextToSpeechClient()
+        synthesis_input = texttospeech.SynthesisInput(text=fact_text)
+        voice = texttospeech.VoiceSelectionParams(
+            language_code="en-AU",
+            name="en-AU-Neural2-D",
+            ssml_gender=texttospeech.SsmlVoiceGender.MALE
+        )
+        audio_config = texttospeech.AudioConfig(
+            audio_encoding=texttospeech.AudioEncoding.MP3,
+            speaking_rate=0.9,
+            pitch=0.8,
+            volume_gain_db=2.0
+        )
+        response = client.synthesize_speech(
+            input=synthesis_input,
+            voice=voice,
+            audio_config=audio_config,
+            enable_time_pointing=[texttospeech.SynthesizeSpeechRequest.TimepointType.WORD]
+        )
+        with open(audio_path, "wb") as out:
+            out.write(response.audio_content)
+        audio_clip = AudioFileClip(audio_path)
 
-        # --- Text overlay ---
-        draw=ImageDraw.Draw(img)
-        font=ImageFont.truetype("Roboto-Regular.ttf",60)
-        x_margin=int(img.width*0.1)
-        max_width=int(img.width*0.8)
+        # Extract word timings
+        word_timings = [(wp.word, wp.time_seconds) for wp in response.timepoints]
+        words = [w for w, t in word_timings]
 
-        words=fact_text.split()
-        lines=[]
-        current_line=[]
+        # --- Split text into lines ---
+        draw = ImageDraw.Draw(img)
+        font = ImageFont.truetype("Roboto-Regular.ttf", 60)
+        x_margin = int(img.width * 0.1)
+        max_width = int(img.width * 0.8)
+
+        lines = []
+        current_line = []
         for word in words:
-            test_line=" ".join(current_line+[word])
-            bbox=draw.textbbox((0,0),test_line,font=font)
-            w=bbox[2]-bbox[0]
-            if w<=max_width:
+            test_line = " ".join(current_line + [word])
+            bbox = draw.textbbox((0,0), test_line, font=font)
+            w = bbox[2] - bbox[0]
+            if w <= max_width:
                 current_line.append(word)
             else:
                 lines.append(" ".join(current_line))
-                current_line=[word]
+                current_line = [word]
         if current_line:
             lines.append(" ".join(current_line))
 
-        pages=[]
-        for i in range(0,len(lines),2):
+        # --- Pages (2 lines per page) ---
+        pages = []
+        for i in range(0, len(lines), 2):
             pages.append("\n".join(lines[i:i+2]))
 
-        # Adjusted for TTS speaking rate 0.9 (≈11% slower)
-        per_page_dur = max((audio_duration / len(pages)) * 1.15, 0.6)    
-        clips=[]
-        for i,page_text in enumerate(pages):
-            page_img=img.copy()
-            draw_page=ImageDraw.Draw(page_img)
-            bbox=draw_page.multiline_textbbox((0,0),page_text,font=font,spacing=15)
-            text_w,text_h=bbox[2]-bbox[0],bbox[3]-bbox[1]
-            x=(page_img.width-text_w)/2
-            y=(page_img.height-text_h)/2
-            draw_page.multiline_text((x,y),page_text,font=font,fill="#FFD700",spacing=15,stroke_width=30,stroke_fill="black",align="center")
-            page_path=os.path.join(tmpdir,f"page_{i}.png")
+        # --- Calculate page durations from word timings ---
+        page_durations = []
+        word_idx = 0
+        for page in pages:
+            page_words = page.replace("\n", " ").split()
+            if not page_words:
+                page_durations.append(0.5)
+                continue
+            start_time = word_timings[word_idx][1]
+            word_idx_end = word_idx + len(page_words) - 1
+            end_time = word_timings[word_idx_end][1]
+            duration = max(end_time - start_time, 0.5)  # minimum 0.5s
+            page_durations.append(duration)
+            word_idx += len(page_words)
+
+        # --- Create video clips per page ---
+        clips = []
+        for i, page_text in enumerate(pages):
+            page_img = img.copy()
+            draw_page = ImageDraw.Draw(page_img)
+            bbox = draw_page.multiline_textbbox((0,0), page_text, font=font, spacing=15)
+            text_w, text_h = bbox[2]-bbox[0], bbox[3]-bbox[1]
+            x = (page_img.width - text_w)/2
+            y = (page_img.height - text_h)/2
+            draw_page.multiline_text((x,y), page_text, font=font, fill="#FFD700", spacing=15,
+                                     stroke_width=30, stroke_fill="black", align="center")
+            page_path = os.path.join(tmpdir, f"page_{i}.png")
             page_img.save(page_path)
-            clip=ImageClip(page_path).set_duration(per_page_dur)
+            clip = ImageClip(page_path).set_duration(page_durations[i])
             clips.append(clip)
 
-        video_clip=concatenate_videoclips(clips).set_audio(audio_clip)
-        output_path=os.path.join(tmpdir,"trivia_video.mp4")
+        video_clip = concatenate_videoclips(clips).set_audio(audio_clip)
+        output_path = os.path.join(tmpdir,"trivia_video.mp4")
         video_clip.write_videofile(output_path,fps=24,codec="libx264",audio_codec="aac",verbose=False,logger=None)
 
-        gs_url,https_url=upload_to_gcs(output_path,output_gcs_path)
-        return gs_url,https_url
+        gs_url,https_url = upload_to_gcs(output_path, output_gcs_path)
+        return gs_url, https_url
 
 # -------------------------------
 # Flask Endpoint
