@@ -357,11 +357,12 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             pitch=0.8,
             volume_gain_db=2.0
         )
+        # ✅ Correct enum usage
         response = client.synthesize_speech(
             input=synthesis_input,
             voice=voice,
             audio_config=audio_config,
-            enable_time_pointing=[texttospeech.SynthesizeSpeechRequest.TimepointType.WORD]
+            enable_time_pointing=[texttospeech.SynthesizeSpeechConfig.TimepointType.WORD]
         )
         with open(audio_path, "wb") as out:
             out.write(response.audio_content)
@@ -407,7 +408,7 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             start_time = word_timings[word_idx][1]
             word_idx_end = word_idx + len(page_words) - 1
             end_time = word_timings[word_idx_end][1]
-            duration = max(end_time - start_time, 0.5)  # minimum 0.5s
+            duration = max(end_time - start_time, 0.5)
             page_durations.append(duration)
             word_idx += len(page_words)
 
@@ -420,8 +421,10 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             text_w, text_h = bbox[2]-bbox[0], bbox[3]-bbox[1]
             x = (page_img.width - text_w)/2
             y = (page_img.height - text_h)/2
-            draw_page.multiline_text((x,y), page_text, font=font, fill="#FFD700", spacing=15,
-                                     stroke_width=30, stroke_fill="black", align="center")
+            draw_page.multiline_text(
+                (x,y), page_text, font=font, fill="#FFD700", spacing=15,
+                stroke_width=30, stroke_fill="black", align="center"
+            )
             page_path = os.path.join(tmpdir, f"page_{i}.png")
             page_img.save(page_path)
             clip = ImageClip(page_path).set_duration(page_durations[i])
