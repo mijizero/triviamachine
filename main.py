@@ -294,15 +294,14 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
         # 2️⃣ Pexels fallback if DuckDuckGo failed
         if not valid_image:
             try:
-                # Simplify search query for Pexels
                 simplified_query = search_query.lower()
                 for word in ["in", "of", "the", "from", "at", "on", "a", "an"]:
                     simplified_query = simplified_query.replace(f" {word} ", " ")
                 simplified_query = simplified_query.strip().split()
-                simplified_query = simplified_query[:2]  # keep only first 2 words
+                simplified_query = simplified_query[:2]
                 simplified_query = " ".join(simplified_query)
                 if len(simplified_query) < 2:
-                    simplified_query = search_query  # fallback to original if too short
+                    simplified_query = search_query
 
                 headers = {"Authorization": "zXJ9dAVT3F0TLcEqMkGXtE5H8uePbhEvuq0kBnWnbq8McMpIKTQeWnDQ"}
                 pexels_url = f"https://api.pexels.com/v1/search?query={simplified_query}&orientation=portrait&per_page=1"
@@ -377,16 +376,48 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
         for i in range(0,len(lines),2):
             pages.append("\n".join(lines[i:i+2]))
 
-        per_page_dur = max((audio_duration / len(pages)) * 1.15, 0.6)
+        # -------------------------------
+        # 🔧 Timing logic adjustment
+        # -------------------------------
+        total_words = len(words) if len(words) > 0 else 1
+        words_per_sec = total_words / audio_duration
+        pause_per_punc = 0.12  # small pause per punctuation
+        min_page_dur = 0.6
+
+        raw_durations = []
+        for page in pages:
+            page_words = page.replace("\n"," ").split()
+            base = len(page_words) / words_per_sec
+            punct_count = sum(page.count(ch) for ch in [",",".",";","?","!","-",":","\""])
+            extra = punct_count * pause_per_punc
+            raw_durations.append(base + extra)
+
+        total_raw = sum(raw_durations)
+        if total_raw == 0:
+            per_page_durations = [max(min_page_dur, audio_duration / len(pages))] * len(pages)
+        else:
+            scale_factor = audio_duration / total_raw
+            per_page_durations = [max(min_page_dur, d * scale_factor) for d in raw_durations]
+
+        # --- Page creation ---
         clips=[]
-        for i,page_text in enumerate(pages):
+        for i,(page_text,per_page_dur) in enumerate(zip(pages,per_page_durations)):
             page_img=img.copy()
             draw_page=ImageDraw.Draw(page_img)
             bbox=draw_page.multiline_textbbox((0,0),page_text,font=font,spacing=15)
             text_w,text_h=bbox[2]-bbox[0],bbox[3]-bbox[1]
             x=(page_img.width-text_w)/2
             y=(page_img.height-text_h)/2
-            draw_page.multiline_text((x,y),page_text,font=font,fill="#FFD700",spacing=15,stroke_width=40,stroke_fill="black",align="center")
+            draw_page.multiline_text(
+                (x,y),
+                page_text,
+                font=font,
+                fill="#FFD700",
+                spacing=15,
+                stroke_width=40,
+                stroke_fill="black",
+                align="center"
+            )
             page_path=os.path.join(tmpdir,f"page_{i}.png")
             page_img.save(page_path)
             clip=ImageClip(page_path).set_duration(per_page_dur)
