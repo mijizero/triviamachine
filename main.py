@@ -271,7 +271,7 @@ def upload_video_to_youtube_gcs(gcs_path, title, description, category, tags=Non
 def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/output.mp4"):
     with tempfile.TemporaryDirectory() as tmpdir:
         search_query = extract_search_query(fact_text)
-        bg_path = os.path.join(tmpdir,"background.jpg")
+        bg_path = os.path.join(tmpdir, "background.jpg")
         valid_image = False
         img_url = None
 
@@ -283,11 +283,11 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
                 img_url = results[0].get("image")
                 if img_url:
                     response = requests.get(img_url, stream=True, timeout=10)
-                    if response.status_code==200 and "image" in response.headers.get("Content-Type",""):
-                        with open(bg_path,"wb") as f:
+                    if response.status_code == 200 and "image" in response.headers.get("Content-Type", ""):
+                        with open(bg_path, "wb") as f:
                             for chunk in response.iter_content(8192):
                                 f.write(chunk)
-                        valid_image=True
+                        valid_image = True
         except Exception:
             pass
 
@@ -323,126 +323,125 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
         if not valid_image:
             fallback_url = "https://storage.googleapis.com/trivia-videos-output/background.jpg"
             response = requests.get(fallback_url)
-            with open(bg_path,"wb") as f:
+            with open(bg_path, "wb") as f:
                 f.write(response.content)
 
         # --- Resize/crop to 1080x1920 ---
-        target_size=(1080,1920)
+        target_size = (1080, 1920)
         img = Image.open(bg_path).convert("RGB")
-        img_ratio = img.width/img.height
-        target_ratio = target_size[0]/target_size[1]
-        if img_ratio>target_ratio:
-            new_width=int(img.height*target_ratio)
-            left=(img.width-new_width)//2
-            right=left+new_width
-            img=img.crop((left,0,right,img.height))
+        img_ratio = img.width / img.height
+        target_ratio = target_size[0] / target_size[1]
+        if img_ratio > target_ratio:
+            new_width = int(img.height * target_ratio)
+            left = (img.width - new_width) // 2
+            right = left + new_width
+            img = img.crop((left, 0, right, img.height))
         else:
-            new_height=int(img.width/target_ratio)
-            top=(img.height-new_height)//2
-            bottom=top+new_height
-            img=img.crop((0,top,img.width,bottom))
-        img=img.resize(target_size,Image.LANCZOS)
-        bg_path=os.path.join(tmpdir,"background_resized.jpg")
+            new_height = int(img.width / target_ratio)
+            top = (img.height - new_height) // 2
+            bottom = top + new_height
+            img = img.crop((0, top, img.width, bottom))
+        img = img.resize(target_size, Image.LANCZOS)
+        bg_path = os.path.join(tmpdir, "background_resized.jpg")
         img.save(bg_path)
 
         # --- TTS ---
-        audio_path=os.path.join(tmpdir,"audio.mp3")
-        synthesize_speech(fact_text,audio_path)
-        audio_clip=AudioFileClip(audio_path)
-        audio_duration=audio_clip.duration
+        audio_path = os.path.join(tmpdir, "audio.mp3")
+        synthesize_speech(fact_text, audio_path)
+        audio_clip = AudioFileClip(audio_path)
+        audio_duration = audio_clip.duration
 
         # --- Text overlay ---
-        draw=ImageDraw.Draw(img)
-        font=ImageFont.truetype("Roboto-Regular.ttf",55)
-        x_margin=int(img.width*0.1)
-        max_width=int(img.width*0.8)
+        draw = ImageDraw.Draw(img)
+        font = ImageFont.truetype("Roboto-Regular.ttf", 55)
+        x_margin = int(img.width * 0.1)
+        max_width = int(img.width * 0.8)
 
-        words=fact_text.split()
-        lines=[]
-        current_line=[]
+        words = fact_text.split()
+        lines = []
+        current_line = []
         for word in words:
-            test_line=" ".join(current_line+[word])
-            bbox=draw.textbbox((0,0),test_line,font=font)
-            w=bbox[2]-bbox[0]
-            if w<=max_width:
+            test_line = " ".join(current_line + [word])
+            bbox = draw.textbbox((0, 0), test_line, font=font)
+            w = bbox[2] - bbox[0]
+            if w <= max_width:
                 current_line.append(word)
             else:
                 lines.append(" ".join(current_line))
-                current_line=[word]
+                current_line = [word]
         if current_line:
             lines.append(" ".join(current_line))
 
-        pages=[]
-        for i in range(0,len(lines),2):
-            pages.append("\n".join(lines[i:i+2]))
+        pages = []
+        for i in range(0, len(lines), 2):
+            pages.append("\n".join(lines[i:i + 2]))
 
         # -------------------------------
-        # 🔧 Improved Timing Logic (per word + punctuation weighting)
+        # 🧠 Hybrid Timing Logic (words + punctuation + character density + line rhythm)
         # -------------------------------
-        # This block tweaks per-page durations to better match TTS rhythm.
         total_words = len(words) if len(words) > 0 else 1
-        # Protect against zero audio_duration
+        total_chars = len(fact_text.replace(" ", ""))
         if audio_duration <= 0:
-            audio_duration = max(0.01, sum(len(p.split()) for p in pages) / 3.0)
+            audio_duration = max(0.01, total_words / 3.0)
 
         words_per_sec = total_words / audio_duration
-        # punctuation adds fractional time (per punctuation character)
-        punct_unit = 0.10   # base extra time per punctuation marker (tunable)
-        min_page_dur = 0.5  # minimum page duration
+        chars_per_sec = total_chars / audio_duration
+        min_page_dur = 0.5
 
         def page_rhythm_multiplier(text):
-            """Return multiplier based on punctuation, long words and commas."""
             punc_count = sum(text.count(ch) for ch in [",", ".", ";", ":", "?", "!", "-", "\""])
             long_word_count = sum(1 for w in text.split() if len(w) >= 8)
-            # Commas deserve a smaller additive pause, periods/?,! deserve larger
             comma_count = text.count(",")
             period_like = text.count(".") + text.count("?") + text.count("!")
-            # Build multiplier: base + punctuation influence + long-word influence
-            multiplier = 1.0 + (0.015 * long_word_count) + (0.025 * comma_count) + (0.06 * period_like) + (0.012 * punc_count)
+            multiplier = 1.0 + (0.012 * long_word_count) + (0.02 * comma_count) + (0.05 * period_like) + (0.01 * punc_count)
             return max(1.0, multiplier)
+
+        def line_density_multiplier(page):
+            """Adds a micro rhythm adjustment for 1-line vs 2-line pages."""
+            line_count = page.count("\n") + 1
+            return 1.05 if line_count == 1 else 0.97
 
         weighted_durations = []
         for page in pages:
-            word_count = len(page.replace("\n"," ").split())
-            base_time = word_count / words_per_sec
-            # apply rhythm multiplier
+            clean_page = page.replace("\n", " ")
+            word_count = len(clean_page.split())
+            char_count = len(clean_page.replace(" ", ""))
+            base_time = (
+                (0.6 * (word_count / words_per_sec)) +
+                (0.4 * (char_count / chars_per_sec))
+            )
             rhythm = page_rhythm_multiplier(page)
-            weighted = base_time * rhythm
-            weighted_durations.append(weighted)
+            line_adj = line_density_multiplier(page)
+            weighted_durations.append(base_time * rhythm * line_adj)
 
         total_weighted = sum(weighted_durations)
         if total_weighted == 0:
-            # fallback: uniform
             per_page_durations = [max(min_page_dur, audio_duration / max(1, len(pages)))] * len(pages)
         else:
             scale = audio_duration / total_weighted
             per_page_durations = [max(min_page_dur, d * scale) for d in weighted_durations]
 
-            # small correction to ensure sum equals audio_duration (distribute residual)
-            summed = sum(per_page_durations)
-            residual = audio_duration - summed
-            if abs(residual) > 1e-3:
-                # distribute residual proportionally to durations (prefer longer pages)
-                total_pos = sum(per_page_durations)
-                if total_pos <= 0:
-                    # spread evenly
-                    per_page_durations = [d + residual / len(per_page_durations) for d in per_page_durations]
-                else:
-                    per_page_durations = [d + (d / total_pos) * residual for d in per_page_durations]
-                # final clamp to min_page_dur
-                per_page_durations = [max(min_page_dur, d) for d in per_page_durations]
+            correction_factor = 0.94
+            per_page_durations = [d * correction_factor for d in per_page_durations]
+
+            total_dur = sum(per_page_durations)
+            if abs(total_dur - audio_duration) > 1e-3:
+                adjust = audio_duration - total_dur
+                per_page_durations = [d + (d / total_dur) * adjust for d in per_page_durations]
+
+            per_page_durations = [max(min_page_dur, d) for d in per_page_durations]
 
         # --- Page creation ---
-        clips=[]
-        for i,(page_text,per_page_dur) in enumerate(zip(pages,per_page_durations)):
-            page_img=img.copy()
-            draw_page=ImageDraw.Draw(page_img)
-            bbox=draw_page.multiline_textbbox((0,0),page_text,font=font,spacing=15)
-            text_w,text_h=bbox[2]-bbox[0],bbox[3]-bbox[1]
-            x=(page_img.width-text_w)/2
-            y=(page_img.height-text_h)/2
+        clips = []
+        for i, (page_text, per_page_dur) in enumerate(zip(pages, per_page_durations)):
+            page_img = img.copy()
+            draw_page = ImageDraw.Draw(page_img)
+            bbox = draw_page.multiline_textbbox((0, 0), page_text, font=font, spacing=15)
+            text_w, text_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            x = (page_img.width - text_w) / 2
+            y = (page_img.height - text_h) / 2
             draw_page.multiline_text(
-                (x,y),
+                (x, y),
                 page_text,
                 font=font,
                 fill="#FFD700",
@@ -451,17 +450,17 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
                 stroke_fill="black",
                 align="center"
             )
-            page_path=os.path.join(tmpdir,f"page_{i}.png")
+            page_path = os.path.join(tmpdir, f"page_{i}.png")
             page_img.save(page_path)
-            clip=ImageClip(page_path).set_duration(per_page_dur)
+            clip = ImageClip(page_path).set_duration(per_page_dur)
             clips.append(clip)
 
-        video_clip=concatenate_videoclips(clips).set_audio(audio_clip)
-        output_path=os.path.join(tmpdir,"trivia_video.mp4")
-        video_clip.write_videofile(output_path,fps=24,codec="libx264",audio_codec="aac",verbose=False,logger=None)
+        video_clip = concatenate_videoclips(clips).set_audio(audio_clip)
+        output_path = os.path.join(tmpdir, "trivia_video.mp4")
+        video_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", verbose=False, logger=None)
 
-        gs_url,https_url=upload_to_gcs(output_path,output_gcs_path)
-        return gs_url,https_url
+        gs_url, https_url = upload_to_gcs(output_path, output_gcs_path)
+        return gs_url, https_url
 
 # -------------------------------
 # Flask Endpoint
