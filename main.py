@@ -270,36 +270,34 @@ def upload_video_to_youtube_gcs(gcs_path, title, description, category, tags=Non
 # -------------------------------
 def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/output.mp4"):
     with tempfile.TemporaryDirectory() as tmpdir:
+        # --- Extract image query ---
         search_query = extract_search_query(fact_text)
-        bg_path = os.path.join(tmpdir,"background.jpg")
+        bg_path = os.path.join(tmpdir, "background.jpg")
         valid_image = False
         img_url = None
 
-        # 1️⃣ Try DuckDuckGo first
+        # 1️⃣ DuckDuckGo
         try:
             with DDGS() as ddgs:
                 results = list(ddgs.images(search_query, max_results=1))
             if results:
                 img_url = results[0].get("image")
                 if img_url:
-                    response = requests.get(img_url, stream=True, timeout=10)
-                    if response.status_code==200 and "image" in response.headers.get("Content-Type",""):
-                        with open(bg_path,"wb") as f:
-                            for chunk in response.iter_content(8192):
+                    r = requests.get(img_url, stream=True, timeout=10)
+                    if r.status_code == 200 and "image" in r.headers.get("Content-Type", ""):
+                        with open(bg_path, "wb") as f:
+                            for chunk in r.iter_content(8192):
                                 f.write(chunk)
-                        valid_image=True
+                        valid_image = True
         except Exception:
             pass
 
-        # 2️⃣ Pexels fallback if DuckDuckGo failed
+        # 2️⃣ Pexels fallback
         if not valid_image:
             try:
-                simplified_query = search_query.lower()
-                for word in ["in", "of", "the", "from", "at", "on", "a", "an"]:
-                    simplified_query = simplified_query.replace(f" {word} ", " ")
-                simplified_query = simplified_query.strip().split()[:2]
-                simplified_query = " ".join(simplified_query) or search_query
-
+                simplified_query = " ".join(
+                    w for w in search_query.lower().split() if w not in ["in","of","the","from","at","on","a","an"]
+                )[:2]
                 headers = {"Authorization": "zXJ9dAVT3F0TLcEqMkGXtE5H8uePbhEvuq0kBnWnbq8McMpIKTQeWnDQ"}
                 pexels_url = f"https://api.pexels.com/v1/search?query={simplified_query}&orientation=portrait&per_page=1"
                 r = requests.get(pexels_url, headers=headers, timeout=10)
@@ -307,42 +305,42 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
                     data = r.json()
                     if data.get("photos"):
                         img_url = data["photos"][0]["src"]["original"]
-                        response = requests.get(img_url, stream=True, timeout=10)
-                        if response.status_code == 200 and "image" in response.headers.get("Content-Type", ""):
+                        r2 = requests.get(img_url, stream=True, timeout=10)
+                        if r2.status_code == 200 and "image" in r2.headers.get("Content-Type", ""):
                             with open(bg_path, "wb") as f:
-                                for chunk in response.iter_content(8192):
+                                for chunk in r2.iter_content(8192):
                                     f.write(chunk)
                             valid_image = True
             except Exception as e:
                 print("Pexels fallback failed:", e)
 
-        # 3️⃣ Final fallback to default background
+        # 3️⃣ Default fallback
         if not valid_image:
             fallback_url = "https://storage.googleapis.com/trivia-videos-output/background.jpg"
-            response = requests.get(fallback_url)
-            with open(bg_path,"wb") as f:
-                f.write(response.content)
+            r = requests.get(fallback_url)
+            with open(bg_path, "wb") as f:
+                f.write(r.content)
 
         # --- Resize/crop to 1080x1920 ---
-        target_size=(1080,1920)
+        target_size = (1080, 1920)
         img = Image.open(bg_path).convert("RGB")
-        img_ratio = img.width/img.height
-        target_ratio = target_size[0]/target_size[1]
-        if img_ratio>target_ratio:
-            new_width=int(img.height*target_ratio)
-            left=(img.width-new_width)//2
-            right=left+new_width
-            img=img.crop((left,0,right,img.height))
+        img_ratio = img.width / img.height
+        target_ratio = target_size[0] / target_size[1]
+        if img_ratio > target_ratio:
+            new_width = int(img.height * target_ratio)
+            left = (img.width - new_width) // 2
+            right = left + new_width
+            img = img.crop((left, 0, right, img.height))
         else:
-            new_height=int(img.width/target_ratio)
-            top=(img.height-new_height)//2
-            bottom=top+new_height
-            img=img.crop((0,top,img.width,bottom))
-        img=img.resize(target_size,Image.LANCZOS)
-        bg_path=os.path.join(tmpdir,"background_resized.jpg")
-        img.save(bg_path)
+            new_height = int(img.width / target_ratio)
+            top = (img.height - new_height) // 2
+            bottom = top + new_height
+            img = img.crop((0, top, img.width, bottom))
+        img = img.resize(target_size, Image.LANCZOS)
+        bg_path_resized = os.path.join(tmpdir, "background_resized.jpg")
+        img.save(bg_path_resized)
 
-        # --- TTS with word-level timings ---
+        # --- TTS with word-level timings (v2.31) ---
         audio_path = os.path.join(tmpdir, "audio.mp3")
         client = texttospeech.TextToSpeechClient()
         synthesis_input = texttospeech.SynthesisInput(text=fact_text)
@@ -357,12 +355,11 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             pitch=0.8,
             volume_gain_db=2.0
         )
-        # ✅ Correct enum usage
         response = client.synthesize_speech(
             input=synthesis_input,
             voice=voice,
             audio_config=audio_config,
-            enable_time_pointing=[texttospeech.TimepointType.WORD]
+            enable_time_pointing=["WORD"]
         )
         with open(audio_path, "wb") as out:
             out.write(response.audio_content)
@@ -382,7 +379,7 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
         current_line = []
         for word in words:
             test_line = " ".join(current_line + [word])
-            bbox = draw.textbbox((0,0), test_line, font=font)
+            bbox = draw.textbbox((0, 0), test_line, font=font)
             w = bbox[2] - bbox[0]
             if w <= max_width:
                 current_line.append(word)
@@ -393,11 +390,9 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             lines.append(" ".join(current_line))
 
         # --- Pages (2 lines per page) ---
-        pages = []
-        for i in range(0, len(lines), 2):
-            pages.append("\n".join(lines[i:i+2]))
+        pages = ["\n".join(lines[i:i + 2]) for i in range(0, len(lines), 2)]
 
-        # --- Calculate page durations from word timings ---
+        # --- Page durations ---
         page_durations = []
         word_idx = 0
         for page in pages:
@@ -417,12 +412,12 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
         for i, page_text in enumerate(pages):
             page_img = img.copy()
             draw_page = ImageDraw.Draw(page_img)
-            bbox = draw_page.multiline_textbbox((0,0), page_text, font=font, spacing=15)
-            text_w, text_h = bbox[2]-bbox[0], bbox[3]-bbox[1]
-            x = (page_img.width - text_w)/2
-            y = (page_img.height - text_h)/2
+            bbox = draw_page.multiline_textbbox((0, 0), page_text, font=font, spacing=15)
+            text_w, text_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            x = (page_img.width - text_w) / 2
+            y = (page_img.height - text_h) / 2
             draw_page.multiline_text(
-                (x,y), page_text, font=font, fill="#FFD700", spacing=15,
+                (x, y), page_text, font=font, fill="#FFD700", spacing=15,
                 stroke_width=30, stroke_fill="black", align="center"
             )
             page_path = os.path.join(tmpdir, f"page_{i}.png")
@@ -431,10 +426,10 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             clips.append(clip)
 
         video_clip = concatenate_videoclips(clips).set_audio(audio_clip)
-        output_path = os.path.join(tmpdir,"trivia_video.mp4")
-        video_clip.write_videofile(output_path,fps=24,codec="libx264",audio_codec="aac",verbose=False,logger=None)
+        output_path = os.path.join(tmpdir, "trivia_video.mp4")
+        video_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", verbose=False, logger=None)
 
-        gs_url,https_url = upload_to_gcs(output_path, output_gcs_path)
+        gs_url, https_url = upload_to_gcs(output_path, output_gcs_path)
         return gs_url, https_url
 
 # -------------------------------
