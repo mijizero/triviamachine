@@ -378,7 +378,7 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             pages.append("\n".join(lines[i:i+2]))
 
         # Adjusted for TTS speaking rate 0.9 (≈11% slower)
-        per_page_dur = max((audio_duration / len(pages)) * 1.11, 0.5)    
+        per_page_dur = max((audio_duration / len(pages)) * 1.15, 0.6)    
         clips=[]
         for i,page_text in enumerate(pages):
             page_img=img.copy()
