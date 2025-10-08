@@ -350,11 +350,6 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
         synthesize_speech(fact_text,audio_path)
         audio_clip=AudioFileClip(audio_path)
         audio_duration=audio_clip.duration
-        
-        # --- Optional: Trim small TTS lead silence for tighter sync ---
-        AUDIO_OFFSET = 0.25  # seconds to trim; adjust between 0.20–0.35 as needed
-        if AUDIO_OFFSET > 0 and audio_clip.duration > AUDIO_OFFSET:
-            audio_clip = audio_clip.subclip(AUDIO_OFFSET)
 
         # --- Text overlay ---
         draw=ImageDraw.Draw(img)
@@ -382,27 +377,27 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             pages.append("\n".join(lines[i:i+2]))
 
         # -------------------------------
-        # 🔧 Timing logic adjustment
+        # 🔧 Improved Timing Logic (per word + punctuation weighting)
         # -------------------------------
         total_words = len(words) if len(words) > 0 else 1
         words_per_sec = total_words / audio_duration
-        pause_per_punc = 0.12  # small pause per punctuation
+        pause_weight = 0.12  # punctuation adds fractional time
         min_page_dur = 0.6
 
-        raw_durations = []
+        weighted_durations = []
         for page in pages:
-            page_words = page.replace("\n"," ").split()
-            base = len(page_words) / words_per_sec
+            word_count = len(page.split())
             punct_count = sum(page.count(ch) for ch in [",",".",";","?","!","-",":","\""])
-            extra = punct_count * pause_per_punc
-            raw_durations.append(base + extra)
+            base_time = word_count / words_per_sec
+            weight_factor = 1 + (punct_count * pause_weight)
+            weighted_durations.append(base_time * weight_factor)
 
-        total_raw = sum(raw_durations)
-        if total_raw == 0:
+        total_weighted = sum(weighted_durations)
+        if total_weighted == 0:
             per_page_durations = [max(min_page_dur, audio_duration / len(pages))] * len(pages)
         else:
-            scale_factor = audio_duration / total_raw
-            per_page_durations = [max(min_page_dur, d * scale_factor) for d in raw_durations]
+            scale_factor = audio_duration / total_weighted
+            per_page_durations = [max(min_page_dur, d * scale_factor) for d in weighted_durations]
 
         # --- Page creation ---
         clips=[]
