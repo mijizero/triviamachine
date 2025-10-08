@@ -350,6 +350,11 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
         synthesize_speech(fact_text,audio_path)
         audio_clip=AudioFileClip(audio_path)
         audio_duration=audio_clip.duration
+        
+        # --- Optional: Trim small TTS lead silence for tighter sync ---
+        AUDIO_OFFSET = 0.25  # seconds to trim; adjust between 0.20–0.35 as needed
+        if AUDIO_OFFSET > 0 and audio_clip.duration > AUDIO_OFFSET:
+            audio_clip = audio_clip.subclip(AUDIO_OFFSET)
 
         # --- Text overlay ---
         draw=ImageDraw.Draw(img)
