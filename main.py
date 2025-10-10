@@ -87,55 +87,85 @@ def get_unique_fact():
     return fact, source_code
 
 def get_dynamic_fact():
-    source = random.choice([1,2,3,4])
-    # Source label
-    source_label = {1: "A", 2: "B", 3: "C", 4: "D"}[source]
+    """Try the 4 sources in random order and return (fact_text, source_label).
+    If every source attempt fails, return the honey fallback with source 'Z'."""
+    sources = [1, 2, 3, 4]
+    random.shuffle(sources)
+    source_label_map = {1: "A", 2: "B", 3: "C", 4: "D"}
+
     def gemini_fact(prompt):
         model = GenerativeModel("gemini-2.5-flash")
         response = model.generate_content(prompt)
-        return response.text.strip()
+        return response.text.strip() if response and getattr(response, "text", None) else ""
 
-    if source == 1:
+    # Try each source once in a random order
+    for source in sources:
+        label = source_label_map[source]
         try:
-            res = requests.get("https://en.wikipedia.org/api/rest_v1/page/random/summary", timeout=10)
-            data = res.json()
-            title = data.get("title", "")
-            extract = data.get("extract", "")
-            wiki_text = f"{title}: {extract}"
-            prompt = (
-                "Rewrite the following Wikipedia summary into a 3-sentence trivia fact. "
-                "Start with 'Did you know', then add 2 supporting sentences that give background or interesting details.\n\n"
-                f"Summary: {wiki_text}"
-            )
-            return gemini_fact(prompt), source_label
-        except Exception:
-            pass
-    elif source == 2:
-        prompt = (
-            "Give one factual and engaging piece of technology trivia in 3 sentences. "
-            "Sentence 1 must start with 'Did you know'. "
-            "Sentences 2 and 3 should add interesting details or background."
-        )
-        return gemini_fact(prompt), source_label
-    elif source == 3:
-        prompt = (
-            "Give one true and engaging trivia, fact, or recent news about kdrama, kpop, or korean celebrities in 3 sentences. "
-            "Start with 'Did you know', then add 2 supporting sentences with factual context or significance."
-        )
-        return gemini_fact(prompt), source_label
-    elif source == 4:
-        prompt = (
-            "Give one short, factual trivia about trending international media, movies, or celebrities in 3 sentences. "
-            "The first must start with 'Did you know'. "
-            "The next 2 sentences should give interesting supporting info or context."
-        )
-        
-        return gemini_fact(prompt), source_label
-    return (
+            if source == 1:
+                try:
+                    res = requests.get(
+                        "https://en.wikipedia.org/api/rest_v1/page/random/summary",
+                        timeout=10
+                    )
+                    if res.ok:
+                        data = res.json()
+                        title = data.get("title", "")
+                        extract = data.get("extract", "")
+                        wiki_text = f"{title}: {extract}"
+                        prompt = (
+                            "Rewrite the following Wikipedia summary into a 3-sentence trivia fact. "
+                            "Start with 'Did you know', then add 2 supporting sentences that give background or interesting details.\n\n"
+                            f"Summary: {wiki_text}"
+                        )
+                        fact = gemini_fact(prompt)
+                        if fact:
+                            return fact, label
+                except Exception:
+                    # try next source
+                    continue
+
+            elif source == 2:
+                prompt = (
+                    "Give one factual and engaging piece of technology trivia in 3 sentences. "
+                    "Sentence 1 must start with 'Did you know'. "
+                    "Sentences 2 and 3 should add interesting details or background."
+                )
+                fact = gemini_fact(prompt)
+                if fact:
+                    return fact, label
+
+            elif source == 3:
+                prompt = (
+                    "Give one true and engaging trivia, fact, or recent news about kdrama, kpop, or korean celebrities in 3 sentences. "
+                    "Start with 'Did you know', then add 2 supporting sentences with factual context or significance."
+                )
+                fact = gemini_fact(prompt)
+                if fact:
+                    return fact, label
+
+            elif source == 4:
+                prompt = (
+                    "Give one short, factual trivia about trending international media, movies, or celebrities in 3 sentences. "
+                    "The first must start with 'Did you know'. "
+                    "The next 2 sentences should give interesting supporting info or context."
+                )
+                fact = gemini_fact(prompt)
+                if fact:
+                    return fact, label
+
+        except Exception as e:
+            # don't raise — try the next source
+            print(f"get_dynamic_fact(): source {source} attempt failed: {e}")
+            continue
+
+    # If all sources failed, return honey fallback
+    honey = (
         "Did you know honey never spoils? "
         "Archaeologists have found edible honey in ancient Egyptian tombs over 3000 years old. "
-        "Its natural composition prevents bacteria from growing, keeping it preserved for millennia.","Z"
+        "Its natural composition prevents bacteria from growing, keeping it preserved for millennia."
     )
+    return honey, "Z"
 
 # -------------------------------
 # Gemini Helpers
