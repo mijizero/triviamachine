@@ -277,36 +277,6 @@ def is_similar(a, b, threshold=0.8):
 
 def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/output.mp4"):
     with tempfile.TemporaryDirectory() as tmpdir:
-        # =====================================================
-        # 🧠 New: Handle labeled multi-source input and deduplication
-        # fact_text may come in as a list of (source, text) tuples
-        # or a plain string. If plain string, treat it as source "A".
-        # =====================================================
-        facts_by_source = []
-        if isinstance(fact_text, list):
-            for item in fact_text:
-                if isinstance(item, tuple) and len(item) == 2:
-                    facts_by_source.append({"source": item[0], "text": item[1].strip()})
-                else:
-                    facts_by_source.append({"source": "A", "text": str(item).strip()})
-        else:
-            facts_by_source.append({"source": "A", "text": fact_text.strip()})
-
-        # --- Deduplicate using similarity ---
-        unique_facts = []
-        for f in facts_by_source:
-            if not any(is_similar(f["text"], uf["text"]) for uf in unique_facts):
-                unique_facts.append(f)
-
-        # --- Combine text back into one string for video ---
-        fact_text = "\n".join([f["text"] for f in unique_facts])
-
-        # --- Collect used source codes ---
-        used_sources = sorted(set(f["source"] for f in unique_facts))
-        source_str = ", ".join(used_sources)
-        print(f"Sources used: {source_str}")
-        # =====================================================
-
         search_query = extract_search_query(fact_text)
         bg_path = os.path.join(tmpdir, "background.jpg")
         valid_image = False
@@ -388,7 +358,7 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
         audio_clip = AudioFileClip(audio_path)
         audio_duration = audio_clip.duration
 
-        # --- Text overlay setup ---
+        # --- Text overlay ---
         draw = ImageDraw.Draw(img)
         font = ImageFont.truetype("Roboto-Regular.ttf", 55)
         x_margin = int(img.width * 0.1)
@@ -414,69 +384,159 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             pages.append("\n".join(lines[i:i + 2]))
 
         # -------------------------------
-        # 🧠 Option B: Dynamic Hybrid Timing (word, char, rhythm, line bias)
+        # 🧠 Hybrid Timing Logic (word + char + punctuation + line rhythm)
         # -------------------------------
-        total_words = len(words) or 1
+        total_words = len(words) if len(words) > 0 else 1
         total_chars = len(fact_text.replace(" ", ""))
         if audio_duration <= 0:
             audio_duration = max(0.01, total_words / 3.0)
 
+        words_per_sec = total_words / audio_duration
+        chars_per_sec = total_chars / audio_duration
         min_page_dur = 0.5
 
-        def rhythm_multiplier(page):
-            punc = sum(page.count(ch) for ch in [",", ".", ";", ":", "?", "!", "-", "\""])
-            commas = page.count(",")
-            periods = page.count(".") + page.count("?") + page.count("!")
-            long_words = sum(1 for w in page.split() if len(w) >= 8)
-            base = 1.0 + 0.01 * long_words + 0.015 * commas + 0.04 * periods + 0.008 * punc
-            return base
+        def page_rhythm_multiplier(text):
+            punc_count = sum(text.count(ch) for ch in [",", ".", ";", ":", "?", "!", "-", "\""])
+            long_word_count = sum(1 for w in text.split() if len(w) >= 8)
+            comma_count = text.count(",")
+            period_like = text.count(".") + text.count("?") + text.count("!")
+            multiplier = 1.0 + (0.012 * long_word_count) + (0.02 * comma_count) + (0.05 * period_like) + (0.01 * punc_count)
+            return max(1.0, multiplier)
 
-        def line_bias(page):
+        def line_density_multiplier(page):
+            """Adds a micro rhythm adjustment for 1-line vs 2-line pages."""
             line_count = page.count("\n") + 1
-            return 1.05 if line_count == 1 else 0.96
+            return 1.05 if line_count == 1 else 0.97
 
-        weighted = []
+        weighted_durations = []
         for page in pages:
-            wc = len(page.split())
-            cc = len(page.replace(" ", ""))
-            base = (wc * 0.6 + cc * 0.4 / 5.0) / 3.0
-            rhythm = rhythm_multiplier(page)
-            line_adj = line_bias(page)
-            if wc < 8:
-                bias = 0.94
-            elif wc > 18:
-                bias = 0.98
-            else:
-                bias = 0.96
-            weighted.append(base * rhythm * line_adj * bias)
+            clean_page = page.replace("\n", " ")
+            word_count = len(clean_page.split())
+            char_count = len(clean_page.replace(" ", ""))
+            base_time = (
+                (0.6 * (word_count / words_per_sec)) +
+                (0.4 * (char_count / chars_per_sec))
+            )
+            rhythm = page_rhythm_multiplier(page)
+            line_adj = line_density_multiplier(page)
+            weighted_durations.append(base_time * rhythm * line_adj)
 
-        total_est = sum(weighted)
-        if total_est == 0:
-            per_page = [max(min_page_dur, audio_duration / max(1, len(pages)))] * len(pages)
+        total_weighted = sum(weighted_durations)
+        if total_weighted == 0:
+            per_page_durations = [max(min_page_dur, audio_duration / max(1, len(pages)))] * len(pages)
         else:
-            scale = audio_duration / total_est
-            per_page = [max(min_page_dur, w * scale) for w in weighted]
+            scale = audio_duration / total_weighted
+            per_page_durations = [max(min_page_dur, d * scale) for d in weighted_durations]
 
-        # 🔧 Adaptive micro-timing fix for Page 2 and last page
-        if len(per_page) >= 2:
-            avg_dur = sum(per_page) / len(per_page)
-            for i in range(len(per_page)):
-                text_len = len(pages[i].replace("\n", ""))
-                long_text = text_len > (sum(len(p.replace("\n", "")) for p in pages) / len(pages))
-                if i == 1:
-                    if long_text:
-                        per_page[i] *= 0.94
-                    else:
-                        per_page[i] *= 1.04
-                elif i == len(per_page) - 1:
-                    if long_text:
-                        per_page[i] *= 1.08
-                    else:
-                        per_page[i] *= 1.04
+            # small correction to ensure sum equals audio_duration (distribute residual)
+            summed = sum(per_page_durations)
+            residual = audio_duration - summed
+            if abs(residual) > 1e-6 and len(per_page_durations) > 0:
+                # distribute residual proportionally to durations
+                total_pos = sum(per_page_durations)
+                if total_pos <= 0:
+                    per_page_durations = [d + residual / len(per_page_durations) for d in per_page_durations]
+                else:
+                    per_page_durations = [d + (d / total_pos) * residual for d in per_page_durations]
+                per_page_durations = [max(min_page_dur, d) for d in per_page_durations]
+
+        # -------------------------------
+        # 🎯 Targeted sync fix for early pages (page 2 / index 1, maybe page 1)
+        # Use expected start times (from word counts) and actual video start times;
+        # if the video start of page 2 is later than expected, shave time off earlier pages
+        # and redistribute to later pages so overall length remains audio_duration.
+        # -------------------------------
+        # Build words-per-page and expected start times:
+        words_per_page = [len(p.replace("\n", " ").split()) for p in pages]
+        total_words = sum(words_per_page) if sum(words_per_page) > 0 else total_words
+        expected_starts = []
+        acc = 0
+        for wc in words_per_page:
+            expected_starts.append((acc / total_words) * audio_duration)
+            acc += wc
+
+        # video start times from per_page_durations
+        video_starts = []
+        accv = 0.0
+        for d in per_page_durations:
+            video_starts.append(accv)
+            accv += d
+
+        # We'll attempt to fix index 1 (page 2) first; also attempt small fix for index 0 if needed.
+        def try_fix_page_start(target_index, threshold=0.08):
+            """
+            If video_starts[target_index] is > expected_starts[target_index] (i.e. text appears too late),
+            attempt to reduce earlier pages durations (starting from immediate predecessor) down to min_page_dur
+            to remove the discrepancy, then redistribute the removed time to later pages proportionally.
+            """
+            nonlocal per_page_durations, video_starts
+            if target_index >= len(pages) or target_index == 0:
+                return
+            discrepancy = video_starts[target_index] - expected_starts[target_index]
+            if discrepancy <= threshold:
+                return  # small enough, ignore
+            remaining_reduce = discrepancy
+            reduced_total = 0.0
+
+            # Try reduce previous pages (closest first)
+            for j in range(target_index - 1, -1, -1):
+                can_reduce = per_page_durations[j] - min_page_dur
+                if can_reduce <= 0:
+                    continue
+                take = min(can_reduce, remaining_reduce)
+                per_page_durations[j] -= take
+                remaining_reduce -= take
+                reduced_total += take
+                if remaining_reduce <= 1e-6:
+                    break
+
+            if reduced_total <= 0:
+                return  # couldn't reduce anything
+
+            # Now redistribute reduced_total across later pages (from target_index to end)
+            future_indices = list(range(target_index, len(per_page_durations)))
+            sum_future = sum(per_page_durations[k] for k in future_indices)
+            if sum_future <= 0:
+                # fallback: spread evenly across future pages
+                for k in future_indices:
+                    per_page_durations[k] += reduced_total / max(1, len(future_indices))
+            else:
+                for k in future_indices:
+                    per_page_durations[k] += reduced_total * (per_page_durations[k] / sum_future)
+
+            # Recompute video_starts for caller
+            vs = []
+            a = 0.0
+            for d in per_page_durations:
+                vs.append(a)
+                a += d
+            video_starts = vs
+
+        # Try to fix page 2 (index 1) primarily
+        if len(pages) >= 2:
+            try_fix_page_start(1, threshold=0.06)
+
+        # As a safety, re-evaluate small residual and clamp minimums again and rebalance
+        summed = sum(per_page_durations)
+        residual = audio_duration - summed
+        if abs(residual) > 1e-6:
+            # add/subtract small residual to last page(s)
+            if len(per_page_durations) > 0:
+                per_page_durations[-1] += residual
+
+        per_page_durations = [max(min_page_dur, d) for d in per_page_durations]
+
+        # Final normalization: if still not equal, distribute any tiny diff proportionally
+        final_sum = sum(per_page_durations)
+        if abs(final_sum - audio_duration) > 1e-3 and final_sum > 0:
+            diff = audio_duration - final_sum
+            for idx in range(len(per_page_durations)):
+                per_page_durations[idx] += (per_page_durations[idx] / final_sum) * diff
+            per_page_durations = [max(min_page_dur, d) for d in per_page_durations]
 
         # --- Page creation ---
         clips = []
-        for i, (page_text, dur) in enumerate(zip(pages, per_page)):
+        for i, (page_text, per_page_dur) in enumerate(zip(pages, per_page_durations)):
             page_img = img.copy()
             draw_page = ImageDraw.Draw(page_img)
             bbox = draw_page.multiline_textbbox((0, 0), page_text, font=font, spacing=15)
@@ -495,16 +555,14 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             )
             page_path = os.path.join(tmpdir, f"page_{i}.png")
             page_img.save(page_path)
-            clip = ImageClip(page_path).set_duration(dur)
+            clip = ImageClip(page_path).set_duration(per_page_dur)
             clips.append(clip)
 
         video_clip = concatenate_videoclips(clips).set_audio(audio_clip)
         output_path = os.path.join(tmpdir, "trivia_video.mp4")
         video_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", verbose=False, logger=None)
 
-        # --- Upload with appended source info ---
         gs_url, https_url = upload_to_gcs(output_path, output_gcs_path)
-        print(f"Uploaded with sources: {source_str}")
         return gs_url, https_url
 
 # -------------------------------
