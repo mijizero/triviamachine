@@ -34,6 +34,27 @@ firestore_client = firestore.Client(project="trivia-machine-472207", database="(
 db = firestore_client
 FACTS_COLLECTION = "facts_history"
 
+import re
+import hashlib
+
+_seen_facts = set()
+
+def normalize_fact(text: str) -> str:
+    """Normalize fact for duplicate detection (ignores word order and punctuation)."""
+    text = text.lower()
+    text = re.sub(r"[^a-z0-9\s]", "", text)
+    words = sorted(text.split())
+    return " ".join(words)
+
+def is_duplicate_fact(fact: str) -> bool:
+    """Check and remember if a fact (or reworded version) already appeared."""
+    normalized = normalize_fact(fact)
+    digest = hashlib.md5(normalized.encode()).hexdigest()
+    if digest in _seen_facts:
+        return True
+    _seen_facts.add(digest)
+    return False
+
 def load_recent_facts(limit=10):
     try:
         docs = db.collection(FACTS_COLLECTION) \
@@ -56,13 +77,14 @@ def save_fact(fact_text):
 def get_unique_fact():
     recent = load_recent_facts()
     for _ in range(5):
-        fact = get_dynamic_fact()
-        if fact not in recent:
+        fact, source_code = get_dynamic_fact()
+        if not is_duplicate_fact(fact) and fact not in recent:
             save_fact(fact)
-            return fact
-    fact = get_dynamic_fact()
+            return fact, source_code
+    # fallback if all failed
+    fact, source_code = get_dynamic_fact()
     save_fact(fact)
-    return fact
+    return fact, source_code
 
 def get_dynamic_fact():
     source = random.choice([1,2,3,4])
@@ -83,7 +105,7 @@ def get_dynamic_fact():
                 "Start with 'Did you know', then add 2 supporting sentences that give background or interesting details.\n\n"
                 f"Summary: {wiki_text}"
             )
-            return gemini_fact(prompt)
+            return gemini_fact(prompt), source_label
         except Exception:
             pass
     elif source == 2:
@@ -92,24 +114,26 @@ def get_dynamic_fact():
             "Sentence 1 must start with 'Did you know'. "
             "Sentences 2 and 3 should add interesting details or background."
         )
-        return gemini_fact(prompt)
+        return gemini_fact(prompt), source_label
     elif source == 3:
         prompt = (
             "Give one true and engaging trivia about science, history, or culture in 3 sentences. "
             "Start with 'Did you know', then add 2 supporting sentences with factual context or significance."
         )
-        return gemini_fact(prompt)
+        return gemini_fact(prompt), source_label
     elif source == 4:
         prompt = (
             "Give one short, factual trivia about trending media, movies, or celebrities in 3 sentences. "
             "The first must start with 'Did you know'. "
             "The next 2 sentences should give interesting supporting info or context."
         )
-        return gemini_fact(prompt)
+               # Source label
+        source_label = {1: "A", 2: "B", 3: "C", 4: "D"}[source]
+        return gemini_fact(prompt), source_label
     return (
         "Did you know honey never spoils? "
         "Archaeologists have found edible honey in ancient Egyptian tombs over 3000 years old. "
-        "Its natural composition prevents bacteria from growing, keeping it preserved for millennia."
+        "Its natural composition prevents bacteria from growing, keeping it preserved for millennia.","Z"
     )
 
 # -------------------------------
@@ -211,7 +235,7 @@ def sanitize_for_youtube(text, max_len=100):
         text = text[:max_len].rsplit(" ",1)[0]
     return text
 
-def upload_video_to_youtube_gcs(gcs_path, title, description, category, tags=None, privacy="public"):
+def upload_video_to_youtube_gcs(gcs_path, title, description, category, source_code, tags=None, privacy="public"):
     try:
         if not gcs_path.startswith("gs://"):
             raise ValueError(f"Invalid GCS path: {gcs_path}")
@@ -227,9 +251,10 @@ def upload_video_to_youtube_gcs(gcs_path, title, description, category, tags=Non
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
             blob.download_to_filename(tmp.name)
             tmp_path = tmp.name
-
+        
         media_body = MediaFileUpload(tmp_path, chunksize=-1, resumable=True)
         title_safe = sanitize_for_youtube(title, max_len=100)
+        description += f"\n\n(S: {source_code})"
         description_safe = sanitize_for_youtube(description, max_len=5000)
         category_map = {"pop culture":"24","sports":"17","history":"22","science":"28","tech":"28"}
         category_id = category_map.get(category.lower(),"24")
@@ -573,7 +598,13 @@ def generate_endpoint():
     try:
         data = request.get_json(silent=True) or {}
         # Use provided fact or generate a new unique one
-        fact = data.get("fact") or get_unique_fact()
+        fact_data = data.get("fact")
+        if fact_data:
+            fact = fact_data
+            source_code = data.get("source_code", "X")
+        else:
+            fact, source_code = get_unique_fact()
+        
         category = data.get("category") or infer_category_from_fact(fact)
 
         # Output path in GCS
@@ -594,7 +625,8 @@ def generate_endpoint():
             video_gs_url,
             youtube_title,
             youtube_description,
-            category
+            category,
+            source_code
         )
 
         return jsonify({
