@@ -351,7 +351,7 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
         audio_clip = AudioFileClip(audio_path)
         audio_duration = audio_clip.duration
 
-        # --- Text overlay ---
+        # --- Text overlay setup ---
         draw = ImageDraw.Draw(img)
         font = ImageFont.truetype("Roboto-Regular.ttf", 55)
         x_margin = int(img.width * 0.1)
@@ -377,63 +377,52 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             pages.append("\n".join(lines[i:i + 2]))
 
         # -------------------------------
-        # 🧠 Hybrid Timing Logic (words + punctuation + character density + line rhythm)
+        # 🧠 Option B: Dynamic Hybrid Timing (word, char, rhythm, line bias)
         # -------------------------------
-        total_words = len(words) if len(words) > 0 else 1
+        total_words = len(words) or 1
         total_chars = len(fact_text.replace(" ", ""))
         if audio_duration <= 0:
             audio_duration = max(0.01, total_words / 3.0)
 
-        words_per_sec = total_words / audio_duration
-        chars_per_sec = total_chars / audio_duration
         min_page_dur = 0.5
 
-        def page_rhythm_multiplier(text):
-            punc_count = sum(text.count(ch) for ch in [",", ".", ";", ":", "?", "!", "-", "\""])
-            long_word_count = sum(1 for w in text.split() if len(w) >= 8)
-            comma_count = text.count(",")
-            period_like = text.count(".") + text.count("?") + text.count("!")
-            multiplier = 1.0 + (0.012 * long_word_count) + (0.02 * comma_count) + (0.05 * period_like) + (0.01 * punc_count)
-            return max(1.0, multiplier)
+        def rhythm_multiplier(page):
+            punc = sum(page.count(ch) for ch in [",", ".", ";", ":", "?", "!", "-", "\""])
+            commas = page.count(",")
+            periods = page.count(".") + page.count("?") + page.count("!")
+            long_words = sum(1 for w in page.split() if len(w) >= 8)
+            base = 1.0 + 0.01 * long_words + 0.015 * commas + 0.04 * periods + 0.008 * punc
+            return base
 
-        def line_density_multiplier(page):
-            """Adds a micro rhythm adjustment for 1-line vs 2-line pages."""
+        def line_bias(page):
             line_count = page.count("\n") + 1
-            return 1.05 if line_count == 1 else 0.97
+            return 1.05 if line_count == 1 else 0.96
 
-        weighted_durations = []
+        weighted = []
         for page in pages:
-            clean_page = page.replace("\n", " ")
-            word_count = len(clean_page.split())
-            char_count = len(clean_page.replace(" ", ""))
-            base_time = (
-                (0.6 * (word_count / words_per_sec)) +
-                (0.4 * (char_count / chars_per_sec))
-            )
-            rhythm = page_rhythm_multiplier(page)
-            line_adj = line_density_multiplier(page)
-            weighted_durations.append(base_time * rhythm * line_adj)
+            wc = len(page.split())
+            cc = len(page.replace(" ", ""))
+            base = (wc * 0.6 + cc * 0.4 / 5.0) / 3.0
+            rhythm = rhythm_multiplier(page)
+            line_adj = line_bias(page)
+            if wc < 8:
+                bias = 0.94
+            elif wc > 18:
+                bias = 0.98
+            else:
+                bias = 0.96
+            weighted.append(base * rhythm * line_adj * bias)
 
-        total_weighted = sum(weighted_durations)
-        if total_weighted == 0:
-            per_page_durations = [max(min_page_dur, audio_duration / max(1, len(pages)))] * len(pages)
+        total_est = sum(weighted)
+        if total_est == 0:
+            per_page = [max(min_page_dur, audio_duration / max(1, len(pages)))] * len(pages)
         else:
-            scale = audio_duration / total_weighted
-            per_page_durations = [max(min_page_dur, d * scale) for d in weighted_durations]
-
-            correction_factor = 0.94
-            per_page_durations = [d * correction_factor for d in per_page_durations]
-
-            total_dur = sum(per_page_durations)
-            if abs(total_dur - audio_duration) > 1e-3:
-                adjust = audio_duration - total_dur
-                per_page_durations = [d + (d / total_dur) * adjust for d in per_page_durations]
-
-            per_page_durations = [max(min_page_dur, d) for d in per_page_durations]
+            scale = audio_duration / total_est
+            per_page = [max(min_page_dur, w * scale) for w in weighted]
 
         # --- Page creation ---
         clips = []
-        for i, (page_text, per_page_dur) in enumerate(zip(pages, per_page_durations)):
+        for i, (page_text, dur) in enumerate(zip(pages, per_page)):
             page_img = img.copy()
             draw_page = ImageDraw.Draw(page_img)
             bbox = draw_page.multiline_textbbox((0, 0), page_text, font=font, spacing=15)
@@ -452,7 +441,7 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             )
             page_path = os.path.join(tmpdir, f"page_{i}.png")
             page_img.save(page_path)
-            clip = ImageClip(page_path).set_duration(per_page_dur)
+            clip = ImageClip(page_path).set_duration(dur)
             clips.append(clip)
 
         video_clip = concatenate_videoclips(clips).set_audio(audio_clip)
