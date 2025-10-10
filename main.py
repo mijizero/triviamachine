@@ -88,6 +88,8 @@ def get_unique_fact():
 
 def get_dynamic_fact():
     source = random.choice([1,2,3,4])
+    # Source label
+    source_label = {1: "A", 2: "B", 3: "C", 4: "D"}[source]
     def gemini_fact(prompt):
         model = GenerativeModel("gemini-2.5-flash")
         response = model.generate_content(prompt)
@@ -117,18 +119,17 @@ def get_dynamic_fact():
         return gemini_fact(prompt), source_label
     elif source == 3:
         prompt = (
-            "Give one true and engaging trivia about science, history, or culture in 3 sentences. "
+            "Give one true and engaging trivia, fact, or recent news about kdrama, kpop, or korean celebrities in 3 sentences. "
             "Start with 'Did you know', then add 2 supporting sentences with factual context or significance."
         )
         return gemini_fact(prompt), source_label
     elif source == 4:
         prompt = (
-            "Give one short, factual trivia about trending media, movies, or celebrities in 3 sentences. "
+            "Give one short, factual trivia about trending international media, movies, or celebrities in 3 sentences. "
             "The first must start with 'Did you know'. "
             "The next 2 sentences should give interesting supporting info or context."
         )
-               # Source label
-        source_label = {1: "A", 2: "B", 3: "C", 4: "D"}[source]
+        
         return gemini_fact(prompt), source_label
     return (
         "Did you know honey never spoils? "
