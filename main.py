@@ -268,8 +268,45 @@ def upload_video_to_youtube_gcs(gcs_path, title, description, category, tags=Non
 # -------------------------------
 # Core: Create Video with Text
 # -------------------------------
+from difflib import SequenceMatcher
+
+def is_similar(a, b, threshold=0.8):
+    """Returns True if two strings are semantically similar."""
+    return SequenceMatcher(None, a.lower(), b.lower()).ratio() > threshold
+
+
 def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/output.mp4"):
     with tempfile.TemporaryDirectory() as tmpdir:
+        # =====================================================
+        # 🧠 New: Handle labeled multi-source input and deduplication
+        # fact_text may come in as a list of (source, text) tuples
+        # or a plain string. If plain string, treat it as source "A".
+        # =====================================================
+        facts_by_source = []
+        if isinstance(fact_text, list):
+            for item in fact_text:
+                if isinstance(item, tuple) and len(item) == 2:
+                    facts_by_source.append({"source": item[0], "text": item[1].strip()})
+                else:
+                    facts_by_source.append({"source": "A", "text": str(item).strip()})
+        else:
+            facts_by_source.append({"source": "A", "text": fact_text.strip()})
+
+        # --- Deduplicate using similarity ---
+        unique_facts = []
+        for f in facts_by_source:
+            if not any(is_similar(f["text"], uf["text"]) for uf in unique_facts):
+                unique_facts.append(f)
+
+        # --- Combine text back into one string for video ---
+        fact_text = "\n".join([f["text"] for f in unique_facts])
+
+        # --- Collect used source codes ---
+        used_sources = sorted(set(f["source"] for f in unique_facts))
+        source_str = ", ".join(used_sources)
+        print(f"Sources used: {source_str}")
+        # =====================================================
+
         search_query = extract_search_query(fact_text)
         bg_path = os.path.join(tmpdir, "background.jpg")
         valid_image = False
@@ -423,19 +460,14 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
         # 🔧 Adaptive micro-timing fix for Page 2 and last page
         if len(per_page) >= 2:
             avg_dur = sum(per_page) / len(per_page)
-        
             for i in range(len(per_page)):
                 text_len = len(pages[i].replace("\n", ""))
                 long_text = text_len > (sum(len(p.replace("\n", "")) for p in pages) / len(pages))
-        
-                # Page 2 logic — shorten if long and dense, lengthen if short
                 if i == 1:
                     if long_text:
-                        per_page[i] *= 0.94   # shorten dense Page 2
+                        per_page[i] *= 0.94
                     else:
-                        per_page[i] *= 1.04   # slightly longer if sparse
-        
-                # Last page — give more buffer for natural fade-out
+                        per_page[i] *= 1.04
                 elif i == len(per_page) - 1:
                     if long_text:
                         per_page[i] *= 1.08
@@ -470,7 +502,9 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
         output_path = os.path.join(tmpdir, "trivia_video.mp4")
         video_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", verbose=False, logger=None)
 
+        # --- Upload with appended source info ---
         gs_url, https_url = upload_to_gcs(output_path, output_gcs_path)
+        print(f"Uploaded with sources: {source_str}")
         return gs_url, https_url
 
 # -------------------------------
