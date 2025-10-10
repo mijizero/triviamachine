@@ -420,12 +420,27 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             scale = audio_duration / total_est
             per_page = [max(min_page_dur, w * scale) for w in weighted]
 
-        # 🔧 Micro-timing fix for Page 2 and last page
-        for i in range(len(per_page)):
-            if i == 1:  # Page 2 (index starts at 0)
-                per_page[i] *= 0.97  # shorten slightly
-            elif i == len(per_page) - 1:
-                per_page[i] *= 1.06  # extend final page slightly
+        # 🔧 Adaptive micro-timing fix for Page 2 and last page
+        if len(per_page) >= 2:
+            avg_dur = sum(per_page) / len(per_page)
+        
+            for i in range(len(per_page)):
+                text_len = len(pages[i].replace("\n", ""))
+                long_text = text_len > (sum(len(p.replace("\n", "")) for p in pages) / len(pages))
+        
+                # Page 2 logic — shorten if long and dense, lengthen if short
+                if i == 1:
+                    if long_text:
+                        per_page[i] *= 0.94   # shorten dense Page 2
+                    else:
+                        per_page[i] *= 1.04   # slightly longer if sparse
+        
+                # Last page — give more buffer for natural fade-out
+                elif i == len(per_page) - 1:
+                    if long_text:
+                        per_page[i] *= 1.08
+                    else:
+                        per_page[i] *= 1.04
 
         # --- Page creation ---
         clips = []
