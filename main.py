@@ -3,28 +3,28 @@ import base64
 import tempfile
 from flask import Flask, jsonify
 from moviepy.editor import AudioFileClip, TextClip, CompositeVideoClip, ColorClip
-from google.cloud import texttospeech_v1beta1 as tts_beta
+from google.cloud import texttospeech_v1beta1 as tts
 from google.cloud import storage
 
 # ✅ Define Flask app
 app = Flask(__name__)
 
-# 🎤 Google Cloud TTS Beta Client
-tts_client = tts_beta.TextToSpeechClient()
+# 🎤 Google Cloud TTS Client (v1beta1)
+tts_client = tts.TextToSpeechClient()
 
 # 📦 Hardcoded GCS bucket
 OUTPUT_BUCKET = "trivia-videos-output"
 
 def synthesize_ssml(ssml):
-    """Generate audio + timepoints directly from Google Cloud TTS beta."""
-    input_text = tts_beta.SynthesisInput(ssml=ssml)
-    voice = tts_beta.VoiceSelectionParams(
+    """Generate audio + timepoints directly from Google Cloud TTS (v1beta1)."""
+    input_text = tts.SynthesisInput(ssml=ssml)
+    voice = tts.VoiceSelectionParams(
         language_code="en-US",
         name="en-US-Neural2-A"
     )
-    audio_config = tts_beta.AudioConfig(
-        audio_encoding=tts_beta.AudioEncoding.MP3,
-        enable_time_pointing=[tts_beta.TimepointType.SSML_MARK]
+    audio_config = tts.AudioConfig(
+        audio_encoding=tts.AudioEncoding.MP3,
+        enable_time_pointing=[tts.SynthesizeSpeechRequest.TimepointType.SSML_MARK]
     )
 
     response = tts_client.synthesize_speech(
@@ -44,7 +44,6 @@ def upload_to_gcs(local_path, destination_blob_name):
     bucket = client.bucket(OUTPUT_BUCKET)
     blob = bucket.blob(destination_blob_name)
     blob.upload_from_filename(local_path)
-    # Optional: make public
     blob.make_public()
     print(f"✅ Uploaded to gs://{OUTPUT_BUCKET}/{destination_blob_name}")
     return blob.public_url
