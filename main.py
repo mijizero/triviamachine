@@ -4,6 +4,7 @@ import tempfile
 from flask import Flask, jsonify
 from moviepy.editor import AudioFileClip, TextClip, CompositeVideoClip, ColorClip
 from google.cloud import texttospeech, storage
+from google.cloud.texttospeech_v1.types import TimepointType  # ✅ fix import
 
 # ✅ Define Flask app
 app = Flask(__name__)
@@ -23,7 +24,7 @@ def synthesize_ssml(ssml):
     )
     audio_config = texttospeech.AudioConfig(
         audio_encoding=texttospeech.AudioEncoding.MP3,
-        enable_time_pointing=[texttospeech.TimepointType.SSML_MARK]
+        enable_time_pointing=[TimepointType.SSML_MARK]  # ✅ fixed
     )
 
     response = tts_client.synthesize_speech(
@@ -43,7 +44,6 @@ def upload_to_gcs(local_path, destination_blob_name):
     bucket = client.bucket(OUTPUT_BUCKET)
     blob = bucket.blob(destination_blob_name)
     blob.upload_from_filename(local_path)
-    # Optional: make public
     blob.make_public()
     print(f"✅ Uploaded to gs://{OUTPUT_BUCKET}/{destination_blob_name}")
     return blob.public_url
