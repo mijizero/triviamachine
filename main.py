@@ -1,19 +1,45 @@
 import os
 import base64
 import tempfile
-import requests
 from flask import Flask, jsonify, send_file
 from moviepy.editor import AudioFileClip, TextClip, CompositeVideoClip, ColorClip
+from google.cloud import texttospeech
 
-# ✅ must be defined BEFORE any @app.route
+# ✅ Define Flask app
 app = Flask(__name__)
 
-# 🔧 Your existing Google Cloud Function / TTS endpoint
-TTS_ENDPOINT = "https://us-central1-trivia-machine-472207.cloudfunctions.net/tts_generate"
+# 🎤 Google Cloud TTS Client
+# Make sure your service account in Cloud Run has "Text-to-Speech Editor" or "TTS User" permission
+tts_client = texttospeech.TextToSpeechClient()
+
+def synthesize_ssml(ssml):
+    """Generate audio + timepoints directly from Google Cloud TTS."""
+    input_text = texttospeech.SynthesisInput(ssml=ssml)
+    voice = texttospeech.VoiceSelectionParams(
+        language_code="en-US",
+        name="en-US-Neural2-A"
+    )
+    audio_config = texttospeech.AudioConfig(
+        audio_encoding=texttospeech.AudioEncoding.MP3,
+        enable_time_pointing=[texttospeech.TimepointType.SSML_MARK]
+    )
+
+    response = tts_client.synthesize_speech(
+        input=input_text,
+        voice=voice,
+        audio_config=audio_config
+    )
+
+    audio_b64 = base64.b64encode(response.audio_content).decode("utf-8")
+    marks = [{"markName": m.mark_name, "timeSeconds": m.time_seconds} for m in response.timepoints]
+
+    return audio_b64, marks
+
 
 @app.route("/generate", methods=["POST"])
 def generate():
     try:
+        # 🧾 Example pages for test/demo
         pages = [
             "Formula One began in 1950.\nIt has grown into a global spectacle.",
             "Each race weekend attracts\nmillions of fans worldwide.",
@@ -21,47 +47,28 @@ def generate():
             "Drivers push limits of speed,\nprecision, and endurance."
         ]
 
+        # 🔖 Build SSML with <mark> tags for TTS timing
         ssml = "<speak>"
         for i, p in enumerate(pages):
             ssml += f'<mark name="p{i+1}"/>{p} '
         ssml += "</speak>"
 
-        payload = {
-            "ssml": ssml,
-            "voice": "en-US-Neural2-A",
-            "encoding": "MP3",
-            "enableTimePointing": True
-        }
+        # 🎙️ Generate TTS + timestamps
+        audio_b64, marks = synthesize_ssml(ssml)
 
-        # Call your TTS endpoint safely
-        r = requests.post(TTS_ENDPOINT, json=payload)
-
-        if r.status_code != 200:
-            print("TTS endpoint failed:", r.status_code, r.text)
-            return jsonify({"error": f"TTS endpoint returned {r.status_code}", "details": r.text}), 500
-
-        try:
-            tts_result = r.json()
-        except Exception:
-            print("Invalid JSON response from TTS endpoint:", r.text)
-            return jsonify({"error": "Invalid JSON from TTS endpoint", "raw": r.text}), 500
-
-        audio_b64 = tts_result.get("audioContent")
-        marks = tts_result.get("timepoints", [])
-
-        if not audio_b64:
-            raise Exception("No audio returned from TTS endpoint")
-
+        # 💾 Save temporary audio file
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as ta:
             ta.write(base64.b64decode(audio_b64))
             audio_path = ta.name
 
+        # 🕒 Match pages to mark timings
         timings = []
         for i, m in enumerate(marks):
             start = m["timeSeconds"]
             end = marks[i + 1]["timeSeconds"] if i + 1 < len(marks) else start + 2.5
             timings.append({"page": pages[i], "start": start, "end": end})
 
+        # 🎞️ Build simple black background video with captions
         audio_clip = AudioFileClip(audio_path)
         duration = audio_clip.duration
         bg = ColorClip(size=(1080, 1920), color=(0, 0, 0), duration=duration)
@@ -88,6 +95,6 @@ def generate():
         print("Error:", e)
         return jsonify({"error": str(e)}), 500
 
+
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=8080)
