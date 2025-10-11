@@ -444,12 +444,9 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
         audio_duration = full_audio_clip.duration
 
         # --- Page creation ---
-        # --- Word-precise Page Creation for seamless transitions ---
-        # --- Page creation with slight overlap for smooth transitions ---
-        overlap = 0.25  # seconds to overlap with next page
-        
+        overlap = 0.25
         clips = []
-        for i, (page_text, per_page_dur) in enumerate(zip(pages, per_page_durations)):
+        for i, (page_text, duration) in enumerate(zip(pages, per_page_durations)):
             page_img = img.copy()
             draw_page = ImageDraw.Draw(page_img)
             bbox = draw_page.multiline_textbbox((0, 0), page_text, font=font, spacing=15)
@@ -468,16 +465,13 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             )
             page_path = os.path.join(tmpdir, f"page_{i}.png")
             page_img.save(page_path)
-        
-            # Shorten duration slightly for all but last page
             duration = per_page_dur
             if i < len(pages) - 1:
-                duration = max(0.1, per_page_dur - overlap)
-        
+                duration = max(0.1, per_page_dur - overlap)  # shorten slightly
             clip = ImageClip(page_path).set_duration(duration)
             clips.append(clip)
-        
-        video_clip = concatenate_videoclips(clips).set_audio(audio_clip)
+
+        video_clip = concatenate_videoclips(clips).set_audio(full_audio_clip)
         output_path = os.path.join(tmpdir, "trivia_video.mp4")
         video_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", verbose=False, logger=None)
 
