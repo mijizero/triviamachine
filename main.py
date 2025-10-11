@@ -1,16 +1,18 @@
 import os
 import base64
 import tempfile
-from flask import Flask, jsonify, send_file
+from flask import Flask, jsonify
 from moviepy.editor import AudioFileClip, TextClip, CompositeVideoClip, ColorClip
-from google.cloud import texttospeech
+from google.cloud import texttospeech, storage
 
 # ✅ Define Flask app
 app = Flask(__name__)
 
 # 🎤 Google Cloud TTS Client
-# Make sure your service account in Cloud Run has "Text-to-Speech Editor" or "TTS User" permission
 tts_client = texttospeech.TextToSpeechClient()
+
+# 📦 Hardcoded GCS bucket
+OUTPUT_BUCKET = "trivia-videos-output"
 
 def synthesize_ssml(ssml):
     """Generate audio + timepoints directly from Google Cloud TTS."""
@@ -35,6 +37,16 @@ def synthesize_ssml(ssml):
 
     return audio_b64, marks
 
+def upload_to_gcs(local_path, destination_blob_name):
+    """Uploads a local file to GCS and returns public URL."""
+    client = storage.Client()
+    bucket = client.bucket(OUTPUT_BUCKET)
+    blob = bucket.blob(destination_blob_name)
+    blob.upload_from_filename(local_path)
+    # Optional: make public
+    blob.make_public()
+    print(f"✅ Uploaded to gs://{OUTPUT_BUCKET}/{destination_blob_name}")
+    return blob.public_url
 
 @app.route("/generate", methods=["POST"])
 def generate():
@@ -89,12 +101,19 @@ def generate():
         out_path = os.path.join(tempfile.gettempdir(), "tts_test_video.mp4")
         video.write_videofile(out_path, fps=30, codec="libx264", audio_codec="aac")
 
-        return send_file(out_path, mimetype="video/mp4")
+        # 🔹 Upload video to GCS
+        gcs_name = f"outputs/tts_test_video_{int(tempfile.mkstemp()[1])}.mp4"
+        public_url = upload_to_gcs(out_path, gcs_name)
+
+        # Cleanup temp files
+        os.remove(out_path)
+        os.remove(audio_path)
+
+        return jsonify({"video_url": public_url})
 
     except Exception as e:
         print("Error:", e)
         return jsonify({"error": str(e)}), 500
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
