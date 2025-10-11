@@ -445,10 +445,10 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
 
         # --- Page creation ---
         # --- Word-precise Page Creation for seamless transitions ---
-        clips = []
-        acc_words = 0
-        total_words = sum(len(p.replace("\n", " ").split()) for p in pages)
+        # --- Page creation with slight overlap for smooth transitions ---
+        overlap = 0.25  # seconds to overlap with next page
         
+        clips = []
         for i, (page_text, per_page_dur) in enumerate(zip(pages, per_page_durations)):
             page_img = img.copy()
             draw_page = ImageDraw.Draw(page_img)
@@ -469,15 +469,10 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             page_path = os.path.join(tmpdir, f"page_{i}.png")
             page_img.save(page_path)
         
-            # Calculate exact start/end times based on word ratio
-            words_in_page = len(page_text.replace("\n", " ").split())
-            start_ratio = acc_words / total_words
-            end_ratio = (acc_words + words_in_page) / total_words
-            start_time = start_ratio * audio_duration
-            end_time = end_ratio * audio_duration
-            duration = max(0.05, end_time - start_time)
-        
-            acc_words += words_in_page
+            # Shorten duration slightly for all but last page
+            duration = per_page_dur
+            if i < len(pages) - 1:
+                duration = max(0.1, per_page_dur - overlap)
         
             clip = ImageClip(page_path).set_duration(duration)
             clips.append(clip)
