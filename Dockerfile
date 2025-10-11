@@ -1,8 +1,10 @@
-# Use Python base image
+# Use Python 3.10 slim
 FROM python:3.10-slim
 
 # Prevent Python from writing .pyc files and buffering stdout/stderr
 ENV PYTHONUNBUFFERED=1
+
+# Hardcoded GCS bucket (optional, if you want to use ENV)
 ENV OUTPUT_BUCKET=trivia-videos-output
 
 # Install system dependencies
@@ -21,7 +23,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# ✅ Download and register Roboto font (using curl for reliability)
+# ✅ Download and register Roboto font
 RUN mkdir -p /usr/share/fonts/truetype/roboto && \
     curl -L "https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Regular.ttf" \
     -o /usr/share/fonts/truetype/roboto/Roboto-Regular.ttf && \
@@ -30,15 +32,14 @@ RUN mkdir -p /usr/share/fonts/truetype/roboto && \
 # Set working directory
 WORKDIR /app
 
-# Copy requirements first (for caching)
+# Copy requirements and install
 COPY requirements.txt .
 RUN pip install --upgrade pip setuptools wheel
 RUN pip install --no-cache-dir -r requirements.txt
 RUN pip install moviepy
 
-# Copy app source including credentials.json
-COPY Roboto-Regular.ttf /app/
+# Copy app source
 COPY . .
 
-# Run with Gunicorn (Cloud Run friendly)
+# Cloud Run entry point
 CMD ["gunicorn", "-b", "0.0.0.0:8080", "main:app", "--workers=2", "--threads=4", "--timeout=0"]
