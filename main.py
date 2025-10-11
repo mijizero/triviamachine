@@ -23,7 +23,7 @@ def synthesize_ssml(ssml):
     )
     audio_config = texttospeech.AudioConfig(
         audio_encoding=texttospeech.AudioEncoding.MP3,
-        enable_time_pointing=["SSML_MARK"]  # ✅ string literal instead of enum
+        enable_time_pointing=[texttospeech.SynthesizeSpeechRequest.TimepointType.SSML_MARK]
     )
 
     response = tts_client.synthesize_speech(
