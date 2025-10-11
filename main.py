@@ -4,7 +4,6 @@ import tempfile
 from flask import Flask, jsonify
 from moviepy.editor import AudioFileClip, TextClip, CompositeVideoClip, ColorClip
 from google.cloud import texttospeech, storage
-from google.cloud.texttospeech_v1.types import TimepointType  # ✅ fix import
 
 # ✅ Define Flask app
 app = Flask(__name__)
@@ -24,7 +23,7 @@ def synthesize_ssml(ssml):
     )
     audio_config = texttospeech.AudioConfig(
         audio_encoding=texttospeech.AudioEncoding.MP3,
-        enable_time_pointing=[TimepointType.SSML_MARK]  # ✅ fixed
+        enable_time_pointing=["SSML_MARK"]  # ✅ string literal instead of enum
     )
 
     response = tts_client.synthesize_speech(
@@ -102,7 +101,7 @@ def generate():
         video.write_videofile(out_path, fps=30, codec="libx264", audio_codec="aac")
 
         # 🔹 Upload video to GCS
-        gcs_name = f"outputs/tts_test_video_{int(tempfile.mkstemp()[1])}.mp4"
+        gcs_name = f"outputs/tts_test_video_{int(os.getpid())}.mp4"
         public_url = upload_to_gcs(out_path, gcs_name)
 
         # Cleanup temp files
@@ -112,7 +111,7 @@ def generate():
         return jsonify({"video_url": public_url})
 
     except Exception as e:
-        print("Error:", e)
+        print("❌ Error:", e)
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
