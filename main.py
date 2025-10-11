@@ -6,17 +6,14 @@ from moviepy.editor import AudioFileClip, TextClip, CompositeVideoClip, ColorCli
 from google.cloud import texttospeech_v1beta1 as tts
 from google.cloud import storage
 
-# ✅ Define Flask app
 app = Flask(__name__)
 
-# 🎤 Google Cloud TTS Client (v1beta1)
-tts_client = tts.TextToSpeechClient()
-
-# 📦 Hardcoded GCS bucket
+# Hardcoded GCS bucket
 OUTPUT_BUCKET = "trivia-videos-output"
 
+tts_client = tts.TextToSpeechClient()
+
 def synthesize_ssml(ssml):
-    """Generate audio + timepoints directly from Google Cloud TTS (v1beta1)."""
     input_text = tts.SynthesisInput(ssml=ssml)
     voice = tts.VoiceSelectionParams(
         language_code="en-US",
@@ -24,7 +21,7 @@ def synthesize_ssml(ssml):
     )
     audio_config = tts.AudioConfig(
         audio_encoding=tts.AudioEncoding.MP3,
-        enable_time_pointing=[tts.SynthesizeSpeechRequest.TimepointType.SSML_MARK]
+        enable_time_pointing=[tts.TimepointType.SSML_MARK]
     )
 
     response = tts_client.synthesize_speech(
@@ -39,19 +36,16 @@ def synthesize_ssml(ssml):
     return audio_b64, marks
 
 def upload_to_gcs(local_path, destination_blob_name):
-    """Uploads a local file to GCS and returns public URL."""
     client = storage.Client()
     bucket = client.bucket(OUTPUT_BUCKET)
     blob = bucket.blob(destination_blob_name)
     blob.upload_from_filename(local_path)
     blob.make_public()
-    print(f"✅ Uploaded to gs://{OUTPUT_BUCKET}/{destination_blob_name}")
     return blob.public_url
 
 @app.route("/generate", methods=["POST"])
 def generate():
     try:
-        # 🧾 Example pages for test/demo
         pages = [
             "Formula One began in 1950.\nIt has grown into a global spectacle.",
             "Each race weekend attracts\nmillions of fans worldwide.",
@@ -59,28 +53,23 @@ def generate():
             "Drivers push limits of speed,\nprecision, and endurance."
         ]
 
-        # 🔖 Build SSML with <mark> tags for TTS timing
         ssml = "<speak>"
         for i, p in enumerate(pages):
             ssml += f'<mark name="p{i+1}"/>{p} '
         ssml += "</speak>"
 
-        # 🎙️ Generate TTS + timestamps
         audio_b64, marks = synthesize_ssml(ssml)
 
-        # 💾 Save temporary audio file
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as ta:
             ta.write(base64.b64decode(audio_b64))
             audio_path = ta.name
 
-        # 🕒 Match pages to mark timings
         timings = []
         for i, m in enumerate(marks):
             start = m["timeSeconds"]
             end = marks[i + 1]["timeSeconds"] if i + 1 < len(marks) else start + 2.5
             timings.append({"page": pages[i], "start": start, "end": end})
 
-        # 🎞️ Build simple black background video with captions
         audio_clip = AudioFileClip(audio_path)
         duration = audio_clip.duration
         bg = ColorClip(size=(1080, 1920), color=(0, 0, 0), duration=duration)
@@ -101,11 +90,9 @@ def generate():
         out_path = os.path.join(tempfile.gettempdir(), "tts_test_video.mp4")
         video.write_videofile(out_path, fps=30, codec="libx264", audio_codec="aac")
 
-        # 🔹 Upload video to GCS
         gcs_name = f"outputs/tts_test_video_{int(tempfile.mkstemp()[1])}.mp4"
         public_url = upload_to_gcs(out_path, gcs_name)
 
-        # Cleanup temp files
         os.remove(out_path)
         os.remove(audio_path)
 
