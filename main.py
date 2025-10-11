@@ -585,7 +585,18 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             per_page_durations = [max(min_page_dur, d) for d in per_page_durations]
 
         # --- Page creation ---
+        # --- Page creation with fixed offset ---
         clips = []
+        page_offset = 0.5  # shift all pages earlier by 0.5s
+        video_starts = [0.0]  # start times for each page
+        
+        # build cumulative start times from per_page_durations
+        for i in range(1, len(per_page_durations)):
+            video_starts.append(video_starts[i-1] + per_page_durations[i-1])
+        
+        # apply fixed offset
+        video_starts = [max(0.0, start - page_offset) for start in video_starts]
+        
         for i, (page_text, per_page_dur) in enumerate(zip(pages, per_page_durations)):
             page_img = img.copy()
             draw_page = ImageDraw.Draw(page_img)
@@ -605,10 +616,12 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             )
             page_path = os.path.join(tmpdir, f"page_{i}.png")
             page_img.save(page_path)
-            clip = ImageClip(page_path).set_duration(per_page_dur)
+        
+            clip = ImageClip(page_path).set_duration(per_page_dur).set_start(video_starts[i])
             clips.append(clip)
-
-        video_clip = concatenate_videoclips(clips).set_audio(audio_clip)
+        
+        # concatenate clips and attach audio
+        video_clip = concatenate_videoclips(clips, method="compose").set_audio(audio_clip)
         output_path = os.path.join(tmpdir, "trivia_video.mp4")
         video_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", verbose=False, logger=None)
 
