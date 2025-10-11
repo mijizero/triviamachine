@@ -35,7 +35,7 @@ def generate():
             audio_config=texttospeech.AudioConfig(
                 audio_encoding=texttospeech.AudioEncoding.MP3
             ),
-            enable_time_pointing=[texttospeech.SynthesizeSpeechRequest.TimepointType.SSML_MARK]
+            enable_time_pointing=[texttospeech.TimepointType.SSML_MARK]
         )
 
         # Save the audio to temp file
