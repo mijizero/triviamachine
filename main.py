@@ -213,8 +213,8 @@ def synthesize_speech(text, output_path):
     )
     audio_config = texttospeech.AudioConfig(
         audio_encoding=texttospeech.AudioEncoding.MP3,
-        speaking_rate=0.9,
-        pitch=0.5,
+        speaking_rate=0.8,
+        pitch=-1,
         volume_gain_db=2.0
     )
     response = client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
@@ -441,19 +441,21 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             pages.append("\n".join(lines[i:i + 2]))
 
         # -------------------------------
-        # 🧠 Adaptive Timing Logic (words + punctuation + lines)
+        # 🧠 Adaptive Timing Logic (words + punctuation + lines) with TTS rate
         # -------------------------------
+        tts_speaking_rate = 0.8  # match your synthesize_speech rate
+        
         total_words = len(words) if len(words) > 0 else 1
         total_chars = len(fact_text.replace(" ", ""))
         if audio_duration <= 0:
             audio_duration = max(0.01, total_words / 3.0)
         
-        words_per_sec = total_words / audio_duration
-        chars_per_sec = total_chars / audio_duration
+        # Adjust per-second metrics by TTS rate
+        words_per_sec = total_words / audio_duration * tts_speaking_rate
+        chars_per_sec = total_chars / audio_duration * tts_speaking_rate
         min_page_dur = 0.5  # minimum page duration
         
         def page_rhythm_multiplier(text):
-            """Long words and punctuation slow down reading slightly."""
             long_word_count = sum(1 for w in text.split() if len(w) >= 8)
             comma_count = text.count(",")
             period_like = text.count(".") + text.count("?") + text.count("!")
@@ -463,7 +465,6 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             return max(1.0, multiplier)
         
         def line_density_multiplier(page):
-            """Adjust timing based on number of lines: shorter pages slightly faster."""
             line_count = page.count("\n") + 1
             if line_count == 1:
                 return 1.05
@@ -472,7 +473,7 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             else:
                 return 0.95
         
-        # Compute raw weighted durations
+        # Compute weighted durations
         weighted_durations = []
         for page in pages:
             clean_page = page.replace("\n", " ")
@@ -486,7 +487,7 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             line_adj = line_density_multiplier(page)
             weighted_durations.append(base_time * rhythm * line_adj)
         
-        # Scale durations so sum equals audio duration
+        # Scale durations to match actual audio length
         total_weighted = sum(weighted_durations)
         if total_weighted == 0:
             per_page_durations = [max(min_page_dur, audio_duration / max(1, len(pages)))] * len(pages)
@@ -494,7 +495,7 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             scale = audio_duration / total_weighted
             per_page_durations = [max(min_page_dur, d * scale) for d in weighted_durations]
         
-        # Final tiny residual adjustment
+        # Tiny residual adjustment
         residual = audio_duration - sum(per_page_durations)
         if abs(residual) > 1e-6 and len(per_page_durations) > 0:
             total_pos = sum(per_page_durations)
