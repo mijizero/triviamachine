@@ -1,3 +1,16 @@
+import os
+import base64
+import tempfile
+import requests
+from flask import Flask, jsonify, send_file
+from moviepy.editor import AudioFileClip, TextClip, CompositeVideoClip, ColorClip
+
+# ✅ must be defined BEFORE any @app.route
+app = Flask(__name__)
+
+# 🔧 Your existing Google Cloud Function / TTS endpoint
+TTS_ENDPOINT = "https://us-central1-trivia-machine-472207.cloudfunctions.net/tts_generate"
+
 @app.route("/generate", methods=["POST"])
 def generate():
     try:
