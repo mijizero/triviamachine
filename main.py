@@ -450,18 +450,17 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
 
         words_per_sec = total_words / audio_duration
         chars_per_sec = total_chars / audio_duration
-        min_page_dur = 0.65  # <-- increased for short pages
+        min_page_dur = 0.5
 
         def page_rhythm_multiplier(text):
             punc_count = sum(text.count(ch) for ch in [",", ".", ";", ":", "?", "!", "-", "\""])
             long_word_count = sum(1 for w in text.split() if len(w) >= 8)
             comma_count = text.count(",")
             period_like = text.count(".") + text.count("?") + text.count("!")
-            multiplier = 1.0 + (0.015 * long_word_count) + (0.025 * comma_count) + (0.05 * period_like) + (0.01 * punc_count)
+            multiplier = 1.0 + (0.012 * long_word_count) + (0.02 * comma_count) + (0.05 * period_like) + (0.01 * punc_count)
             return max(1.0, multiplier)
 
         def line_density_multiplier(page):
-            """Adds a micro rhythm adjustment for 1-line vs 2-line pages."""
             line_count = page.count("\n") + 1
             return 1.05 if line_count == 1 else 0.97
 
@@ -485,7 +484,6 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             scale = audio_duration / total_weighted
             per_page_durations = [max(min_page_dur, d * scale) for d in weighted_durations]
 
-            # small correction to ensure sum equals audio_duration (distribute residual)
             summed = sum(per_page_durations)
             residual = audio_duration - summed
             if abs(residual) > 1e-6 and len(per_page_durations) > 0:
@@ -514,9 +512,8 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             accv += d
 
         def try_fix_page_start(target_index, threshold=0.08):
-            """Fix late page text by shaving previous pages and redistributing time."""
             nonlocal per_page_durations, video_starts
-            if target_index >= len(pages):
+            if target_index >= len(pages) or target_index == 0:
                 return
             discrepancy = video_starts[target_index] - expected_starts[target_index]
             if discrepancy <= threshold:
@@ -543,7 +540,6 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             else:
                 for k in future_indices:
                     per_page_durations[k] += reduced_total * (per_page_durations[k] / sum_future)
-            # recompute video_starts
             vs = []
             a = 0.0
             for d in per_page_durations:
@@ -551,24 +547,41 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
                 a += d
             video_starts = vs
 
-        # Apply fix to page 1 and page 0 if needed
         if len(pages) >= 2:
-            try_fix_page_start(1, threshold=0.08)
-        if len(pages) >= 1:
-            try_fix_page_start(0, threshold=0.08)
+            try_fix_page_start(1, threshold=0.06)
 
-        # Clamp minimums and normalize final durations
         summed = sum(per_page_durations)
         residual = audio_duration - summed
         if abs(residual) > 1e-6:
             if len(per_page_durations) > 0:
                 per_page_durations[-1] += residual
+
         per_page_durations = [max(min_page_dur, d) for d in per_page_durations]
+
         final_sum = sum(per_page_durations)
         if abs(final_sum - audio_duration) > 1e-3 and final_sum > 0:
             diff = audio_duration - final_sum
             for idx in range(len(per_page_durations)):
                 per_page_durations[idx] += (per_page_durations[idx] / final_sum) * diff
+            per_page_durations = [max(min_page_dur, d) for d in per_page_durations]
+
+        # -------------------------------
+        # 🛠 Global offset correction (0.3s)
+        # -------------------------------
+        global_offset = 0.3  # seconds
+        if len(per_page_durations) > 0 and sum(per_page_durations) > 0:
+            total_duration = sum(per_page_durations)
+            max_removable = min(global_offset, min(per_page_durations) - min_page_dur)
+            if max_removable > 0:
+                per_page_durations = [
+                    max(min_page_dur, d - (max_removable * (d / total_duration))) for d in per_page_durations
+                ]
+        # Rebalance to match audio_duration
+        final_sum = sum(per_page_durations)
+        residual = audio_duration - final_sum
+        if abs(residual) > 1e-6:
+            for idx in range(len(per_page_durations)):
+                per_page_durations[idx] += (per_page_durations[idx] / final_sum) * residual
             per_page_durations = [max(min_page_dur, d) for d in per_page_durations]
 
         # --- Page creation ---
