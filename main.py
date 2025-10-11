@@ -330,7 +330,6 @@ def is_similar(a, b, threshold=0.8):
     """Returns True if two strings are semantically similar."""
     return SequenceMatcher(None, a.lower(), b.lower()).ratio() > threshold
 
-
 def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/output.mp4"):
     with tempfile.TemporaryDirectory() as tmpdir:
         fact_text = fact_text.replace("*", "").strip()
@@ -355,17 +354,14 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
         except Exception:
             pass
 
-        # 2️⃣ Pexels fallback if DuckDuckGo failed
+        # 2️⃣ Pexels fallback
         if not valid_image:
             try:
                 simplified_query = search_query.lower()
                 for word in ["in", "of", "the", "from", "at", "on", "a", "an"]:
                     simplified_query = simplified_query.replace(f" {word} ", " ")
-                simplified_query = simplified_query.strip().split()
-                simplified_query = simplified_query[:2]
-                simplified_query = " ".join(simplified_query)
-                if len(simplified_query) < 2:
-                    simplified_query = search_query
+                simplified_query = simplified_query.strip().split()[:2]
+                simplified_query = " ".join(simplified_query) or search_query
 
                 headers = {"Authorization": "zXJ9dAVT3F0TLcEqMkGXtE5H8uePbhEvuq0kBnWnbq8McMpIKTQeWnDQ"}
                 pexels_url = f"https://api.pexels.com/v1/search?query={simplified_query}&orientation=portrait&per_page=1"
@@ -383,7 +379,7 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             except Exception as e:
                 print("Pexels fallback failed:", e)
 
-        # 3️⃣ Final fallback to default background
+        # 3️⃣ Final fallback
         if not valid_image:
             fallback_url = "https://storage.googleapis.com/trivia-videos-output/background.jpg"
             response = requests.get(fallback_url)
@@ -409,13 +405,7 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
         bg_path = os.path.join(tmpdir, "background_resized.jpg")
         img.save(bg_path)
 
-        # --- TTS ---
-        audio_path = os.path.join(tmpdir, "audio.mp3")
-        synthesize_speech(fact_text, audio_path)
-        audio_clip = AudioFileClip(audio_path)
-        audio_duration = audio_clip.duration
-
-        # --- Text overlay ---
+        # --- Split fact text into pages ---
         draw = ImageDraw.Draw(img)
         font = ImageFont.truetype("Roboto-Regular.ttf", 55)
         x_margin = int(img.width * 0.1)
@@ -427,8 +417,7 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
         for word in words:
             test_line = " ".join(current_line + [word])
             bbox = draw.textbbox((0, 0), test_line, font=font)
-            w = bbox[2] - bbox[0]
-            if w <= max_width:
+            if bbox[2] - bbox[0] <= max_width:
                 current_line.append(word)
             else:
                 lines.append(" ".join(current_line))
@@ -436,177 +425,27 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
         if current_line:
             lines.append(" ".join(current_line))
 
-        pages = []
-        for i in range(0, len(lines), 2):
-            pages.append("\n".join(lines[i:i + 2]))
+        pages = ["\n".join(lines[i:i+2]) for i in range(0, len(lines), 2)]
 
-        # -------------------------------
-        # 🧠 Adaptive Timing Logic (words + punctuation + lines) with TTS rate
-        # -------------------------------
-        tts_speaking_rate = 0.8  # match your synthesize_speech rate
-        
-        total_words = len(words) if len(words) > 0 else 1
-        total_chars = len(fact_text.replace(" ", ""))
-        if audio_duration <= 0:
-            audio_duration = max(0.01, total_words / 3.0)
-        
-        # Adjust per-second metrics by TTS rate
-        words_per_sec = total_words / audio_duration * tts_speaking_rate
-        chars_per_sec = total_chars / audio_duration * tts_speaking_rate
-        min_page_dur = 0.5  # minimum page duration
-        
-        def page_rhythm_multiplier(text):
-            long_word_count = sum(1 for w in text.split() if len(w) >= 8)
-            comma_count = text.count(",")
-            period_like = text.count(".") + text.count("?") + text.count("!")
-            semicolon_count = text.count(";") + text.count(":")
-            total_punc = comma_count + period_like + semicolon_count
-            multiplier = 1.0 + (0.015 * long_word_count) + (0.03 * total_punc)
-            return max(1.0, multiplier)
-        
-        def line_density_multiplier(page):
-            line_count = page.count("\n") + 1
-            if line_count == 1:
-                return 1.05
-            elif line_count == 2:
-                return 1.0
-            else:
-                return 0.95
-        
-        # Compute weighted durations
-        weighted_durations = []
-        for page in pages:
-            clean_page = page.replace("\n", " ")
-            word_count = len(clean_page.split())
-            char_count = len(clean_page.replace(" ", ""))
-            base_time = (
-                (0.6 * (word_count / words_per_sec)) +
-                (0.4 * (char_count / chars_per_sec))
-            )
-            rhythm = page_rhythm_multiplier(page)
-            line_adj = line_density_multiplier(page)
-            weighted_durations.append(base_time * rhythm * line_adj)
-        
-        # Scale durations to match actual audio length
-        total_weighted = sum(weighted_durations)
-        if total_weighted == 0:
-            per_page_durations = [max(min_page_dur, audio_duration / max(1, len(pages)))] * len(pages)
-        else:
-            scale = audio_duration / total_weighted
-            per_page_durations = [max(min_page_dur, d * scale) for d in weighted_durations]
-        
-        # Tiny residual adjustment
-        residual = audio_duration - sum(per_page_durations)
-        if abs(residual) > 1e-6 and len(per_page_durations) > 0:
-            total_pos = sum(per_page_durations)
-            per_page_durations = [
-                max(min_page_dur, d + (d / total_pos) * residual) for d in per_page_durations
-            ]
+        # --- Page-wise TTS for perfect sync ---
+        page_audio_clips = []
+        per_page_durations = []
 
-        # -------------------------------
-        # 🎯 Targeted sync fix for early pages
-        # -------------------------------
-        words_per_page = [len(p.replace("\n", " ").split()) for p in pages]
-        total_words = sum(words_per_page) if sum(words_per_page) > 0 else total_words
-        expected_starts = []
-        acc = 0
-        for wc in words_per_page:
-            expected_starts.append((acc / total_words) * audio_duration)
-            acc += wc
+        for i, page_text in enumerate(pages):
+            page_text_clean = page_text.strip()
+            page_audio_path = os.path.join(tmpdir, f"audio_page_{i}.mp3")
+            synthesize_speech(page_text_clean, page_audio_path)
+            page_audio_clip = AudioFileClip(page_audio_path)
+            page_audio_clips.append(page_audio_clip)
+            per_page_durations.append(page_audio_clip.duration)
 
-        video_starts = []
-        accv = 0.0
-        for d in per_page_durations:
-            video_starts.append(accv)
-            accv += d
-
-        def try_fix_page_start(target_index, threshold=0.08):
-            nonlocal per_page_durations, video_starts
-            if target_index >= len(pages) or target_index == 0:
-                return
-            discrepancy = video_starts[target_index] - expected_starts[target_index]
-            if discrepancy <= threshold:
-                return
-            remaining_reduce = discrepancy
-            reduced_total = 0.0
-            for j in range(target_index - 1, -1, -1):
-                can_reduce = per_page_durations[j] - min_page_dur
-                if can_reduce <= 0:
-                    continue
-                take = min(can_reduce, remaining_reduce)
-                per_page_durations[j] -= take
-                remaining_reduce -= take
-                reduced_total += take
-                if remaining_reduce <= 1e-6:
-                    break
-            if reduced_total <= 0:
-                return
-            future_indices = list(range(target_index, len(per_page_durations)))
-            sum_future = sum(per_page_durations[k] for k in future_indices)
-            if sum_future <= 0:
-                for k in future_indices:
-                    per_page_durations[k] += reduced_total / max(1, len(future_indices))
-            else:
-                for k in future_indices:
-                    per_page_durations[k] += reduced_total * (per_page_durations[k] / sum_future)
-            vs = []
-            a = 0.0
-            for d in per_page_durations:
-                vs.append(a)
-                a += d
-            video_starts = vs
-
-        if len(pages) >= 2:
-            try_fix_page_start(1, threshold=0.06)
-
-        summed = sum(per_page_durations)
-        residual = audio_duration - summed
-        if abs(residual) > 1e-6:
-            if len(per_page_durations) > 0:
-                per_page_durations[-1] += residual
-
-        per_page_durations = [max(min_page_dur, d) for d in per_page_durations]
-
-        final_sum = sum(per_page_durations)
-        if abs(final_sum - audio_duration) > 1e-3 and final_sum > 0:
-            diff = audio_duration - final_sum
-            for idx in range(len(per_page_durations)):
-                per_page_durations[idx] += (per_page_durations[idx] / final_sum) * diff
-            per_page_durations = [max(min_page_dur, d) for d in per_page_durations]
-
-        # -------------------------------
-        # 🛠 Global offset correction (0.3s)
-        # -------------------------------
-        global_offset = 0.3  # seconds
-        if len(per_page_durations) > 0 and sum(per_page_durations) > 0:
-            total_duration = sum(per_page_durations)
-            max_removable = min(global_offset, min(per_page_durations) - min_page_dur)
-            if max_removable > 0:
-                per_page_durations = [
-                    max(min_page_dur, d - (max_removable * (d / total_duration))) for d in per_page_durations
-                ]
-        # Rebalance to match audio_duration
-        final_sum = sum(per_page_durations)
-        residual = audio_duration - final_sum
-        if abs(residual) > 1e-6:
-            for idx in range(len(per_page_durations)):
-                per_page_durations[idx] += (per_page_durations[idx] / final_sum) * residual
-            per_page_durations = [max(min_page_dur, d) for d in per_page_durations]
+        # Concatenate all page audios
+        full_audio_clip = concatenate_audioclips(page_audio_clips)
+        audio_duration = full_audio_clip.duration
 
         # --- Page creation ---
-        # --- Page creation with fixed offset ---
         clips = []
-        page_offset = 0.5  # shift all pages earlier by 0.5s
-        video_starts = [0.0]  # start times for each page
-        
-        # build cumulative start times from per_page_durations
-        for i in range(1, len(per_page_durations)):
-            video_starts.append(video_starts[i-1] + per_page_durations[i-1])
-        
-        # apply fixed offset
-        video_starts = [max(0.0, start - page_offset) for start in video_starts]
-        
-        for i, (page_text, per_page_dur) in enumerate(zip(pages, per_page_durations)):
+        for i, (page_text, duration) in enumerate(zip(pages, per_page_durations)):
             page_img = img.copy()
             draw_page = ImageDraw.Draw(page_img)
             bbox = draw_page.multiline_textbbox((0, 0), page_text, font=font, spacing=15)
@@ -625,12 +464,10 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             )
             page_path = os.path.join(tmpdir, f"page_{i}.png")
             page_img.save(page_path)
-        
-            clip = ImageClip(page_path).set_duration(per_page_dur).set_start(video_starts[i])
+            clip = ImageClip(page_path).set_duration(duration)
             clips.append(clip)
-        
-        # concatenate clips and attach audio
-        video_clip = concatenate_videoclips(clips, method="compose").set_audio(audio_clip)
+
+        video_clip = concatenate_videoclips(clips).set_audio(full_audio_clip)
         output_path = os.path.join(tmpdir, "trivia_video.mp4")
         video_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", verbose=False, logger=None)
 
