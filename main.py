@@ -3,7 +3,7 @@ import tempfile
 import json
 from flask import Flask, request, jsonify
 from google.cloud import storage, texttospeech, secretmanager
-from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips
+from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips, concatenate_audioclips
 from PIL import Image, ImageDraw, ImageFont
 from duckduckgo_search import DDGS
 import requests
@@ -214,7 +214,7 @@ def synthesize_speech(text, output_path):
     audio_config = texttospeech.AudioConfig(
         audio_encoding=texttospeech.AudioEncoding.MP3,
         speaking_rate=0.8,
-        pitch=-1,
+        pitch=-4,
         volume_gain_db=2.0
     )
     response = client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
