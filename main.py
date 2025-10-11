@@ -441,29 +441,31 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             pages.append("\n".join(lines[i:i + 2]))
 
         # -------------------------------
-        # 🧠 Hybrid Timing Logic (word + char + punctuation + line rhythm)
+        # 🧠 Hybrid Timing Logic with Global Offset Fix
         # -------------------------------
         total_words = len(words) if len(words) > 0 else 1
         total_chars = len(fact_text.replace(" ", ""))
         if audio_duration <= 0:
             audio_duration = max(0.01, total_words / 3.0)
-
+        
         words_per_sec = total_words / audio_duration
         chars_per_sec = total_chars / audio_duration
         min_page_dur = 0.5
-
+        
         def page_rhythm_multiplier(text):
             punc_count = sum(text.count(ch) for ch in [",", ".", ";", ":", "?", "!", "-", "\""])
             long_word_count = sum(1 for w in text.split() if len(w) >= 8)
             comma_count = text.count(",")
             period_like = text.count(".") + text.count("?") + text.count("!")
-            multiplier = 1.0 + (0.012 * long_word_count) + (0.02 * comma_count) + (0.05 * period_like) + (0.01 * punc_count)
+            multiplier = 1.0 + (0.015 * long_word_count) + (0.025 * comma_count) + (0.05 * period_like) + (0.01 * punc_count)
             return max(1.0, multiplier)
-
+        
         def line_density_multiplier(page):
+            """Adds a micro rhythm adjustment for 1-line vs 2-line pages."""
             line_count = page.count("\n") + 1
             return 1.05 if line_count == 1 else 0.97
-
+        
+        # 1️⃣ Compute initial weighted durations
         weighted_durations = []
         for page in pages:
             clean_page = page.replace("\n", " ")
@@ -476,23 +478,97 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             rhythm = page_rhythm_multiplier(page)
             line_adj = line_density_multiplier(page)
             weighted_durations.append(base_time * rhythm * line_adj)
-
+        
+        # 2️⃣ Scale to match audio duration
         total_weighted = sum(weighted_durations)
         if total_weighted == 0:
             per_page_durations = [max(min_page_dur, audio_duration / max(1, len(pages)))] * len(pages)
         else:
             scale = audio_duration / total_weighted
             per_page_durations = [max(min_page_dur, d * scale) for d in weighted_durations]
-
-            summed = sum(per_page_durations)
-            residual = audio_duration - summed
-            if abs(residual) > 1e-6 and len(per_page_durations) > 0:
-                total_pos = sum(per_page_durations)
-                if total_pos <= 0:
-                    per_page_durations = [d + residual / len(per_page_durations) for d in per_page_durations]
-                else:
-                    per_page_durations = [d + (d / total_pos) * residual for d in per_page_durations]
-                per_page_durations = [max(min_page_dur, d) for d in per_page_durations]
+        
+        # 3️⃣ Small residual correction
+        summed = sum(per_page_durations)
+        residual = audio_duration - summed
+        if abs(residual) > 1e-6 and len(per_page_durations) > 0:
+            total_pos = sum(per_page_durations)
+            if total_pos <= 0:
+                per_page_durations = [d + residual / len(per_page_durations) for d in per_page_durations]
+            else:
+                per_page_durations = [d + (d / total_pos) * residual for d in per_page_durations]
+        per_page_durations = [max(min_page_dur, d) for d in per_page_durations]
+        
+        # 4️⃣ Try targeted page start fix (early pages)
+        words_per_page = [len(p.replace("\n", " ").split()) for p in pages]
+        total_words = sum(words_per_page) if sum(words_per_page) > 0 else total_words
+        expected_starts = []
+        acc = 0
+        for wc in words_per_page:
+            expected_starts.append((acc / total_words) * audio_duration)
+            acc += wc
+        
+        video_starts = []
+        accv = 0.0
+        for d in per_page_durations:
+            video_starts.append(accv)
+            accv += d
+        
+        def try_fix_page_start(target_index, threshold=0.08):
+            nonlocal per_page_durations, video_starts
+            if target_index >= len(pages) or target_index == 0:
+                return
+            discrepancy = video_starts[target_index] - expected_starts[target_index]
+            if discrepancy <= threshold:
+                return
+            remaining_reduce = discrepancy
+            reduced_total = 0.0
+            for j in range(target_index - 1, -1, -1):
+                can_reduce = per_page_durations[j] - min_page_dur
+                if can_reduce <= 0:
+                    continue
+                take = min(can_reduce, remaining_reduce)
+                per_page_durations[j] -= take
+                remaining_reduce -= take
+                reduced_total += take
+                if remaining_reduce <= 1e-6:
+                    break
+            if reduced_total <= 0:
+                return
+            future_indices = list(range(target_index, len(per_page_durations)))
+            sum_future = sum(per_page_durations[k] for k in future_indices)
+            if sum_future <= 0:
+                for k in future_indices:
+                    per_page_durations[k] += reduced_total / max(1, len(future_indices))
+            else:
+                for k in future_indices:
+                    per_page_durations[k] += reduced_total * (per_page_durations[k] / sum_future)
+            vs = []
+            a = 0.0
+            for d in per_page_durations:
+                vs.append(a)
+                a += d
+            video_starts = vs
+        
+        if len(pages) >= 2:
+            try_fix_page_start(1, threshold=0.06)
+        
+        # 5️⃣ Apply global offset fix for uniform delay (~0.5s)
+        global_offset = 0.5  # adjust if pages are consistently late by this amount
+        if len(per_page_durations) > 0:
+            per_page_durations[0] = max(min_page_dur, per_page_durations[0] - global_offset)
+            remaining_indices = list(range(1, len(per_page_durations)))
+            if remaining_indices:
+                total_remaining = sum(per_page_durations[i] for i in remaining_indices)
+                for i in remaining_indices:
+                    per_page_durations[i] += global_offset * (per_page_durations[i] / total_remaining)
+        
+        # 6️⃣ Final normalization (ensure sum matches audio duration)
+        final_sum = sum(per_page_durations)
+        if abs(final_sum - audio_duration) > 1e-6 and final_sum > 0:
+            diff = audio_duration - final_sum
+            for idx in range(len(per_page_durations)):
+                per_page_durations[idx] += (per_page_durations[idx] / final_sum) * diff
+        per_page_durations = [max(min_page_dur, d) for d in per_page_durations]
 
         # -------------------------------
         # 🎯 Targeted sync fix for early pages
