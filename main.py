@@ -214,7 +214,7 @@ def synthesize_speech(text, output_path):
     audio_config = texttospeech.AudioConfig(
         audio_encoding=texttospeech.AudioEncoding.MP3,
         speaking_rate=0.9,
-        pitch=1.0,
+        pitch=0.5,
         volume_gain_db=2.0
     )
     response = client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
