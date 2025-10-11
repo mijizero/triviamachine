@@ -450,14 +450,14 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
 
         words_per_sec = total_words / audio_duration
         chars_per_sec = total_chars / audio_duration
-        min_page_dur = 0.5
+        min_page_dur = 0.65  # <-- increased for short pages
 
         def page_rhythm_multiplier(text):
             punc_count = sum(text.count(ch) for ch in [",", ".", ";", ":", "?", "!", "-", "\""])
             long_word_count = sum(1 for w in text.split() if len(w) >= 8)
             comma_count = text.count(",")
             period_like = text.count(".") + text.count("?") + text.count("!")
-            multiplier = 1.0 + (0.012 * long_word_count) + (0.02 * comma_count) + (0.05 * period_like) + (0.01 * punc_count)
+            multiplier = 1.0 + (0.015 * long_word_count) + (0.025 * comma_count) + (0.05 * period_like) + (0.01 * punc_count)
             return max(1.0, multiplier)
 
         def line_density_multiplier(page):
@@ -489,7 +489,6 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             summed = sum(per_page_durations)
             residual = audio_duration - summed
             if abs(residual) > 1e-6 and len(per_page_durations) > 0:
-                # distribute residual proportionally to durations
                 total_pos = sum(per_page_durations)
                 if total_pos <= 0:
                     per_page_durations = [d + residual / len(per_page_durations) for d in per_page_durations]
@@ -498,12 +497,8 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
                 per_page_durations = [max(min_page_dur, d) for d in per_page_durations]
 
         # -------------------------------
-        # 🎯 Targeted sync fix for early pages (page 2 / index 1, maybe page 1)
-        # Use expected start times (from word counts) and actual video start times;
-        # if the video start of page 2 is later than expected, shave time off earlier pages
-        # and redistribute to later pages so overall length remains audio_duration.
+        # 🎯 Targeted sync fix for early pages
         # -------------------------------
-        # Build words-per-page and expected start times:
         words_per_page = [len(p.replace("\n", " ").split()) for p in pages]
         total_words = sum(words_per_page) if sum(words_per_page) > 0 else total_words
         expected_starts = []
@@ -512,30 +507,22 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             expected_starts.append((acc / total_words) * audio_duration)
             acc += wc
 
-        # video start times from per_page_durations
         video_starts = []
         accv = 0.0
         for d in per_page_durations:
             video_starts.append(accv)
             accv += d
 
-        # We'll attempt to fix index 1 (page 2) first; also attempt small fix for index 0 if needed.
         def try_fix_page_start(target_index, threshold=0.08):
-            """
-            If video_starts[target_index] is > expected_starts[target_index] (i.e. text appears too late),
-            attempt to reduce earlier pages durations (starting from immediate predecessor) down to min_page_dur
-            to remove the discrepancy, then redistribute the removed time to later pages proportionally.
-            """
+            """Fix late page text by shaving previous pages and redistributing time."""
             nonlocal per_page_durations, video_starts
-            if target_index >= len(pages) or target_index == 0:
+            if target_index >= len(pages):
                 return
             discrepancy = video_starts[target_index] - expected_starts[target_index]
             if discrepancy <= threshold:
-                return  # small enough, ignore
+                return
             remaining_reduce = discrepancy
             reduced_total = 0.0
-
-            # Try reduce previous pages (closest first)
             for j in range(target_index - 1, -1, -1):
                 can_reduce = per_page_durations[j] - min_page_dur
                 if can_reduce <= 0:
@@ -546,22 +533,17 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
                 reduced_total += take
                 if remaining_reduce <= 1e-6:
                     break
-
             if reduced_total <= 0:
-                return  # couldn't reduce anything
-
-            # Now redistribute reduced_total across later pages (from target_index to end)
+                return
             future_indices = list(range(target_index, len(per_page_durations)))
             sum_future = sum(per_page_durations[k] for k in future_indices)
             if sum_future <= 0:
-                # fallback: spread evenly across future pages
                 for k in future_indices:
                     per_page_durations[k] += reduced_total / max(1, len(future_indices))
             else:
                 for k in future_indices:
                     per_page_durations[k] += reduced_total * (per_page_durations[k] / sum_future)
-
-            # Recompute video_starts for caller
+            # recompute video_starts
             vs = []
             a = 0.0
             for d in per_page_durations:
@@ -569,21 +551,19 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
                 a += d
             video_starts = vs
 
-        # Try to fix page 2 (index 1) primarily
+        # Apply fix to page 1 and page 0 if needed
         if len(pages) >= 2:
-            try_fix_page_start(1, threshold=0.06)
+            try_fix_page_start(1, threshold=0.08)
+        if len(pages) >= 1:
+            try_fix_page_start(0, threshold=0.08)
 
-        # As a safety, re-evaluate small residual and clamp minimums again and rebalance
+        # Clamp minimums and normalize final durations
         summed = sum(per_page_durations)
         residual = audio_duration - summed
         if abs(residual) > 1e-6:
-            # add/subtract small residual to last page(s)
             if len(per_page_durations) > 0:
                 per_page_durations[-1] += residual
-
         per_page_durations = [max(min_page_dur, d) for d in per_page_durations]
-
-        # Final normalization: if still not equal, distribute any tiny diff proportionally
         final_sum = sum(per_page_durations)
         if abs(final_sum - audio_duration) > 1e-3 and final_sum > 0:
             diff = audio_duration - final_sum
