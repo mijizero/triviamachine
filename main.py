@@ -333,6 +333,7 @@ def is_similar(a, b, threshold=0.8):
 
 def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/output.mp4"):
     with tempfile.TemporaryDirectory() as tmpdir:
+        fact_text = fact_text.replace("*", "").strip()
         search_query = extract_search_query(fact_text)
         bg_path = os.path.join(tmpdir, "background.jpg")
         valid_image = False
