@@ -213,8 +213,8 @@ def synthesize_speech(text, output_path):
     )
     audio_config = texttospeech.AudioConfig(
         audio_encoding=texttospeech.AudioEncoding.MP3,
-        speaking_rate=0.8,
-        pitch=-4,
+        speaking_rate=0.9,
+        pitch=-3,
         volume_gain_db=2.0
     )
     response = client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
@@ -444,8 +444,12 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
         audio_duration = full_audio_clip.duration
 
         # --- Page creation ---
+        # --- Word-precise Page Creation for seamless transitions ---
         clips = []
-        for i, (page_text, duration) in enumerate(zip(pages, per_page_durations)):
+        acc_words = 0
+        total_words = sum(len(p.replace("\n", " ").split()) for p in pages)
+        
+        for i, (page_text, per_page_dur) in enumerate(zip(pages, per_page_durations)):
             page_img = img.copy()
             draw_page = ImageDraw.Draw(page_img)
             bbox = draw_page.multiline_textbbox((0, 0), page_text, font=font, spacing=15)
@@ -464,10 +468,21 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             )
             page_path = os.path.join(tmpdir, f"page_{i}.png")
             page_img.save(page_path)
+        
+            # Calculate exact start/end times based on word ratio
+            words_in_page = len(page_text.replace("\n", " ").split())
+            start_ratio = acc_words / total_words
+            end_ratio = (acc_words + words_in_page) / total_words
+            start_time = start_ratio * audio_duration
+            end_time = end_ratio * audio_duration
+            duration = max(0.05, end_time - start_time)
+        
+            acc_words += words_in_page
+        
             clip = ImageClip(page_path).set_duration(duration)
             clips.append(clip)
-
-        video_clip = concatenate_videoclips(clips).set_audio(full_audio_clip)
+        
+        video_clip = concatenate_videoclips(clips).set_audio(audio_clip)
         output_path = os.path.join(tmpdir, "trivia_video.mp4")
         video_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", verbose=False, logger=None)
 
