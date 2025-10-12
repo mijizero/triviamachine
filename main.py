@@ -442,40 +442,84 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             # Write each page (2 lines) on a separate line for alignment
             for page in pages:
                 f.write(page.replace("\n", " ") + "\n")
-        
+
         config_string = "task_language=eng|is_text_type=plain|os_task_file_format=json"
         task = Task(config_string=config_string)
         task.audio_file_path_absolute = audio_path
         task.text_file_path_absolute = text_path
         task.sync_map_file_path_absolute = os.path.join(tmpdir, "map.json")
-        
+
         ExecuteTask(task).execute()
         task.output_sync_map_file()
-        
-        # --- Parse Aeneas output to derive durations ---
+
+        # --- Parse Aeneas output to derive durations and authoritative starts ---
         with open(task.sync_map_file_path_absolute, "r", encoding="utf-8") as f:
             sync_map = json.load(f)
-        
+
         segments = sync_map.get("fragments", [])
         per_page_durations = []
+        aeneas_starts = []
         for i in range(len(pages)):
             if i < len(segments):
                 start = float(segments[i].get("begin", 0))
                 end = float(segments[i].get("end", 0))
-                per_page_durations.append(max(0.05, end - start))
+                dur = max(0.05, end - start)
+                per_page_durations.append(dur)
+                aeneas_starts.append(start)
             else:
-                per_page_durations.append(1.0)  # fallback
-        
-        # Optional: add a small overlap between pages for seamless flow
-        overlap = 0.15
-        for i in range(1, len(per_page_durations)):
-            per_page_durations[i - 1] = max(0.05, per_page_durations[i - 1] - overlap)
-        
-        # Adjust last page if total is shorter than actual audio
-        if sum(per_page_durations) < audio_duration:
-            per_page_durations[-1] += audio_duration - sum(per_page_durations)
+                # fallback: small duration and start guessed as cumulative so far
+                per_page_durations.append(1.0)
+                aeneas_starts.append(sum(per_page_durations[:-1]))
 
-        # --- Page creation synced to weighted durations ---
+        # NOTE:
+        # We will trust Aeneas start times (aeneas_starts) as authoritative.
+        # Build video_starts from per_page_durations; if any video_start is earlier
+        # than Aeneas start (i.e., page appears too early), we delay that page by
+        # adding the needed delta to its immediate predecessor duration.
+        # This avoids showing a page before the audio reaches it (fixes last-page-ahead).
+
+        # compute initial video starts
+        video_starts = []
+        acc = 0.0
+        for d in per_page_durations:
+            video_starts.append(acc)
+            acc += d
+
+        # correction loop: if page i would start earlier than aeneas_starts[i], push it later
+        for i in range(1, len(pages)):
+            delta = aeneas_starts[i] - video_starts[i]
+            # only adjust if delta is meaningfully positive (page would be early)
+            if delta > 0.03:
+                # add delta to immediate predecessor so page i starts later
+                per_page_durations[i - 1] = max(0.05, per_page_durations[i - 1] + delta)
+                # recompute subsequent video_starts
+                video_starts = []
+                acc = 0.0
+                for d in per_page_durations:
+                    video_starts.append(acc)
+                    acc += d
+
+        # If after corrections the total video sum differs from audio, adjust last clip
+        total_video_len = sum(per_page_durations)
+        if total_video_len < audio_duration:
+            per_page_durations[-1] += (audio_duration - total_video_len)
+        elif total_video_len > audio_duration + 0.001 and len(per_page_durations) > 1:
+            # if video too long (should be rare), trim a tiny bit from the last non-zero predecessors
+            excess = total_video_len - audio_duration
+            # remove proportionally from earlier clips (but keep min 0.05)
+            adjustable_indices = list(range(len(per_page_durations) - 1))
+            adj_total = sum(per_page_durations[i] - 0.05 for i in adjustable_indices if per_page_durations[i] > 0.05)
+            if adj_total > 0:
+                for i in adjustable_indices:
+                    if per_page_durations[i] > 0.05:
+                        take = (per_page_durations[i] - 0.05) / adj_total * excess
+                        per_page_durations[i] = max(0.05, per_page_durations[i] - take)
+                # final safety: recompute and adjust last
+                total_video_len = sum(per_page_durations)
+                if total_video_len > audio_duration:
+                    per_page_durations[-1] = max(0.05, per_page_durations[-1] - (total_video_len - audio_duration))
+
+        # --- Page creation synced to Aeneas-anchored durations ---
         clips = []
         for i, (page_text, duration) in enumerate(zip(pages, per_page_durations)):
             page_img = img.copy()
@@ -499,11 +543,12 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             clip = ImageClip(page_path).set_duration(duration)
             clips.append(clip)
 
-        # Extend last page if video shorter than audio
+        # Final safety: ensure last clip covers remaining audio time if tiny diff
         total_video_len = sum(c.duration for c in clips)
-        if total_video_len < audio_duration:
-            diff = audio_duration - total_video_len
-            clips[-1] = clips[-1].set_duration(clips[-1].duration + diff)
+        if total_video_len < audio_duration - 1e-3 and len(clips) > 0:
+            extra = audio_duration - total_video_len
+            last = clips[-1]
+            clips[-1] = last.set_duration(last.duration + extra)
 
         video_clip = concatenate_videoclips(clips).set_audio(full_audio_clip)
         output_path = os.path.join(tmpdir, "trivia_video.mp4")
