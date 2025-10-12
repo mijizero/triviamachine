@@ -621,7 +621,7 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             if logo_resized is not None:
                 try:
                     # Resize to 20% of video width
-                    target_logo_width = int(page_img.width * 0.3)
+                    target_logo_width = int(page_img.width * 0.25)
                     aspect_ratio = logo_resized.height / logo_resized.width
                     logo = logo_resized.resize(
                         (target_logo_width, int(target_logo_width * aspect_ratio)),
@@ -631,8 +631,8 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
                     # Ensure logo is RGBA
                     logo = logo.convert("RGBA")
             
-                    # Apply 90% opacity
-                    alpha = logo.split()[3].point(lambda p: int(p * 0.3))
+                    # Apply  opacity
+                    alpha = logo.split()[3].point(lambda p: int(p * 0.25))
                     logo.putalpha(alpha)
             
                     # Center horizontally
