@@ -9,6 +9,7 @@ ENV OUTPUT_BUCKET=trivia-videos-output
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     espeak \
+    libespeak-dev \        # 🩵 FIX: add this to resolve -lespeak linker error
     libxml2-dev \
     libxslt-dev \
     git \
@@ -35,13 +36,13 @@ RUN mkdir -p /usr/share/fonts/truetype/roboto && \
     -o /usr/share/fonts/truetype/roboto/Roboto-Regular.ttf && \
     fc-cache -f -v
 
-# ✅ Upgrade pip and set up build tools
+# Upgrade pip and build tools
 RUN python3 -m pip install --upgrade pip setuptools wheel
 
-# ✅ Fix Aeneas build on Python 3.10+ by pinning compatible setuptools/numpy
+# ✅ Fix Aeneas build compatibility for Python 3.10
 RUN pip install setuptools==58.0.4 numpy==1.23.0
 
-# ✅ Install Aeneas (after numpy and distutils are ready)
+# 🩵 Install Aeneas after numpy and distutils are ready
 RUN pip install aeneas==1.7.3.0
 
 # Set working directory
