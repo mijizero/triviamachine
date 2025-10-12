@@ -591,17 +591,21 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             print("⚠️ Failed to download/prepare logo:", e)
             logo_resized = None
 
-        # --- Page creation synced to Aeneas-anchored durations ---
+        # --- Page creation synced to Aeneas durations ---
         clips = []
         for i, (page_text, duration) in enumerate(zip(pages, per_page_durations)):
-            page_img = img.copy()
+            page_img = img.copy().convert("RGBA")  # Ensure RGBA for transparency
             draw_page = ImageDraw.Draw(page_img)
+        
+            # --- Calculate text position ---
             bbox = draw_page.multiline_textbbox((0, 0), page_text, font=font, spacing=15)
             text_w, text_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
-            x = (page_img.width - text_w) / 2
-            y = (page_img.height - text_h) / 2
+            text_x = (page_img.width - text_w) / 2
+            text_y = (page_img.height - text_h) / 2
+        
+            # --- Draw text ---
             draw_page.multiline_text(
-                (x, y),
+                (text_x, text_y),
                 page_text,
                 font=font,
                 fill="#FFD700",
@@ -610,34 +614,22 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
                 stroke_fill="black",
                 align="center"
             )
-            
-            # --- Add semi-transparent logo overlay above text (flattened) ---
-            # --- Add semi-transparent logo overlay above text ---
-            try:
-                if logo_resized is not None:
-                    logo = logo_resized
-                    # Horizontal center
-                    logo_x = (page_img.width - logo.width) // 2
-                    # Vertical: place above text, with 30px margin
-                    text_bbox = draw_page.multiline_textbbox((0, 0), page_text, font=font, spacing=15)
-                    text_y = (page_img.height - (text_bbox[3] - text_bbox[1])) // 2
-                    logo_y = max(10, text_y - logo.height - 30)  # 30px above text
-            
-                    # Ensure RGBA and paste logo
-                    page_rgba = page_img.convert("RGBA")
-                    page_rgba.paste(logo, (logo_x, logo_y), logo)
-                    page_img = page_rgba.convert("RGB")
-            
-                    print(f"✅ Pasted logo above text on page {i} at ({logo_x},{logo_y})")
-                else:
-                    page_img = page_img.convert("RGB")
-            except Exception as e:
-                print("⚠️ Logo overlay failed on page", i, ":", e)
-                page_img = page_img.convert("RGB")
-            
+        
+            # --- Paste logo above text ---
+            if logo_resized is not None:
+                try:
+                    logo_x = (page_img.width - logo_resized.width) // 2
+                    logo_y = max(10, text_y - logo_resized.height - 30)  # 30px margin above text
+                    page_img.paste(logo_resized, (int(logo_x), int(logo_y)), logo_resized)
+                    print(f"✅ Logo pasted on page {i} at ({int(logo_x)},{int(logo_y)})")
+                except Exception as e:
+                    print(f"⚠️ Failed to paste logo on page {i}: {e}")
+        
+            # --- Flatten and save ---
+            page_img_rgb = page_img.convert("RGB")
             page_path = os.path.join(tmpdir, f"page_{i}.png")
-            page_img.save(page_path)
-            
+            page_img_rgb.save(page_path)
+        
             clip = ImageClip(page_path).set_duration(duration)
             clips.append(clip)
 
