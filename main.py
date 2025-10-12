@@ -612,19 +612,20 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             )
             
             # --- Add semi-transparent logo overlay above text (flattened) ---
+            # --- Add semi-transparent logo overlay (centered horizontally & vertically) ---
             try:
                 if logo_resized is not None:
                     logo = logo_resized
+                    # Center on page
                     logo_x = (page_img.width - logo.width) // 2
-                    logo_y = max(20, int(y - logo.height - 30))  # above text, not off-screen
-
-                    # Ensure RGBA, paste logo using its alpha then flatten to RGB
+                    logo_y = (page_img.height - logo.height) // 2
+            
+                    # Ensure RGBA and composite
                     page_rgba = page_img.convert("RGBA")
-                    page_rgba.paste(logo, (logo_x, logo_y), logo)
+                    page_rgba.alpha_composite(logo, (logo_x, logo_y))
                     page_img = page_rgba.convert("RGB")
-                    print(f"✅ Pasted logo on page {i} at ({logo_x},{logo_y})")
+                    print(f"✅ Centered logo on page {i} at ({logo_x},{logo_y})")
                 else:
-                    # keep page_img as-is
                     page_img = page_img.convert("RGB")
             except Exception as e:
                 print("⚠️ Logo overlay failed on page", i, ":", e)
