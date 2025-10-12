@@ -616,14 +616,21 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             )
         
             # --- Paste logo above text ---
+            # --- Paste huge logo above text (testing) ---
             if logo_resized is not None:
                 try:
-                    logo_x = (page_img.width - logo_resized.width) // 2
-                    logo_y = max(10, text_y - logo_resized.height - 30)  # 30px margin above text
-                    page_img.paste(logo_resized, (int(logo_x), int(logo_y)), logo_resized)
-                    print(f"✅ Logo pasted on page {i} at ({int(logo_x)},{int(logo_y)})")
+                    # Enlarge logo dramatically for testing
+                    huge_width = int(img.width * 0.8)  # 80% of video width
+                    aspect_ratio = logo_resized.height / logo_resized.width
+                    huge_logo = logo_resized.resize((huge_width, int(huge_width * aspect_ratio)), Image.LANCZOS)
+            
+                    logo_x = (page_img.width - huge_logo.width) // 2
+                    logo_y = max(10, text_y - huge_logo.height - 10)  # small margin above text
+            
+                    page_img.paste(huge_logo, (int(logo_x), int(logo_y)), huge_logo)
+                    print(f"🔥 HUGE Logo pasted on page {i} at ({int(logo_x)},{int(logo_y)})")
                 except Exception as e:
-                    print(f"⚠️ Failed to paste logo on page {i}: {e}")
+                    print(f"⚠️ Failed to paste huge logo on page {i}: {e}")
         
             # --- Flatten and save ---
             page_img_rgb = page_img.convert("RGB")
