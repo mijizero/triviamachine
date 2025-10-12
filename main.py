@@ -71,13 +71,15 @@ def load_seen_facts_from_firestore():
 
 
 def save_fact_to_firestore(fact: str):
-    """Save a new fact to Firestore (for future duplicate detection)."""
+    """Save a new fact to Firestore with normalized field and timestamp."""
     normalized = normalize_fact(fact)
     try:
         db.collection(FACTS_COLLECTION).add({
             "fact": fact,
-            "normalized": normalized
+            "normalized": normalized,
+            "timestamp": firestore.SERVER_TIMESTAMP
         })
+        _seen_facts.add(normalized)  # Optional: keep memory in sync
     except Exception as e:
         print(f"⚠️ Could not save fact to Firestore: {e}")
 
@@ -105,6 +107,7 @@ def is_duplicate_fact(fact: str, threshold: float = 0.88) -> bool:
     save_fact_to_firestore(fact)
     return False
 
+
 def load_recent_facts(limit=10):
     try:
         docs = db.collection(FACTS_COLLECTION) \
@@ -115,25 +118,16 @@ def load_recent_facts(limit=10):
         print("Error loading facts from Firestore:", str(e))
         return []
 
-def save_fact(fact_text):
-    try:
-        db.collection(FACTS_COLLECTION).add({
-            "fact": fact_text,
-            "timestamp": firestore.SERVER_TIMESTAMP
-        })
-    except Exception as e:
-        print("Error saving fact to Firestore:", str(e))
-
 def get_unique_fact():
     recent = load_recent_facts()
     for _ in range(5):
         fact, source_code = get_dynamic_fact()
         if not is_duplicate_fact(fact) and fact not in recent:
-            save_fact(fact)
+            save_fact_to_firestore(fact)  # <--- Use this only
             return fact, source_code
     # fallback if all failed
     fact, source_code = get_dynamic_fact()
-    save_fact(fact)
+    save_fact_to_firestore(fact)
     return fact, source_code
 
 def get_dynamic_fact():
