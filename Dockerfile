@@ -1,11 +1,11 @@
-# Use Python 3.10 base (Aeneas doesn't support 3.12+)
-FROM python:3.10-slim
+# Use full Debian-based Python image for easier Aeneas build
+FROM python:3.10-bullseye
 
 # Prevent Python from writing .pyc files and buffering stdout/stderr
 ENV PYTHONUNBUFFERED=1
 ENV OUTPUT_BUCKET=trivia-videos-output
 
-# Install system dependencies
+# Install Aeneas and multimedia build dependencies
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     espeak \
@@ -18,8 +18,11 @@ RUN apt-get update && apt-get install -y \
     libsm6 \
     libxext6 \
     build-essential \
-    libjpeg-dev \
-    zlib1g-dev \
+    libatlas-base-dev \
+    libffi-dev \
+    libsndfile1 \
+    python3-dev \
+    sox \
     imagemagick \
     wget \
     curl \
