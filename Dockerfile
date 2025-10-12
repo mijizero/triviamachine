@@ -20,7 +20,7 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     libatlas-base-dev \
     libffi-dev \
-    libsndfile1 \
+    libsndfile1-dev \
     python3-dev \
     python3-distutils \
     sox \
@@ -35,13 +35,13 @@ RUN mkdir -p /usr/share/fonts/truetype/roboto && \
     -o /usr/share/fonts/truetype/roboto/Roboto-Regular.ttf && \
     fc-cache -f -v
 
-# Upgrade pip and build tools
+# ✅ Upgrade pip and set up build tools
 RUN python3 -m pip install --upgrade pip setuptools wheel
 
-# 🩵 Install numpy first (Aeneas needs it pre-installed)
-RUN pip install numpy==1.24.4
+# ✅ Fix Aeneas build on Python 3.10+ by pinning compatible setuptools/numpy
+RUN pip install setuptools==58.0.4 numpy==1.23.0
 
-# 🩵 Install Aeneas after numpy
+# ✅ Install Aeneas (after numpy and distutils are ready)
 RUN pip install aeneas==1.7.3.0
 
 # Set working directory
@@ -50,7 +50,7 @@ WORKDIR /app
 # Copy requirements early for caching efficiency
 COPY requirements.txt .
 
-# 🩵 Install project dependencies (avoids redundant installs)
+# ✅ Install project dependencies efficiently
 RUN pip install --no-cache-dir -r requirements.txt
 RUN pip install moviepy
 
@@ -58,5 +58,5 @@ RUN pip install moviepy
 COPY Roboto-Regular.ttf /app/
 COPY . .
 
-# Run with Gunicorn (Cloud Run friendly)
+# ✅ Run with Gunicorn (Cloud Run friendly)
 CMD ["gunicorn", "-b", "0.0.0.0:8080", "main:app", "--workers=2", "--threads=4", "--timeout=0"]
