@@ -445,11 +445,9 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
 
         # --- Page creation ---
         # --- Page creation with minimal transition pause ---
-        from moviepy.editor import CompositeVideoClip
+        transition_offset = 2.0  # seconds to start next page sooner
 
         clips = []
-        start_time = 0.0
-        
         for i, (page_text, duration) in enumerate(zip(pages, per_page_durations)):
             page_img = img.copy()
             draw_page = ImageDraw.Draw(page_img)
@@ -470,13 +468,15 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             page_path = os.path.join(tmpdir, f"page_{i}.png")
             page_img.save(page_path)
         
-            clip = ImageClip(page_path).set_start(start_time).set_duration(duration)
+            # Reduce duration for faster page transition (except last page)
+            clip_duration = duration
+            if i < len(pages) - 1:
+                clip_duration = max(0.05, duration - transition_offset)
+        
+            clip = ImageClip(page_path).set_duration(clip_duration)
             clips.append(clip)
         
-            start_time += duration  # next page starts immediately after this audio
-        
-        # Use CompositeVideoClip to overlay clips exactly at the correct start times
-        video_clip = CompositeVideoClip(clips, size=img.size).set_audio(full_audio_clip)
+        video_clip = concatenate_videoclips(clips).set_audio(full_audio_clip)
         output_path = os.path.join(tmpdir, "trivia_video.mp4")
         video_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", verbose=False, logger=None)
 
