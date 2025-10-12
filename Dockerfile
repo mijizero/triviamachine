@@ -7,6 +7,12 @@ ENV OUTPUT_BUCKET=trivia-videos-output
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
+    python3-pip \
+    espeak \ 
+    libxml2-dev \ 
+    libxslt-dev \ 
+    python3-dev \ 
+    git \ 
     ffmpeg \
     libavcodec-extra \
     fonts-dejavu-core \
@@ -19,6 +25,7 @@ RUN apt-get update && apt-get install -y \
     imagemagick \
     wget \
     curl \
+    && pip install numpy aeneas \ 
     && rm -rf /var/lib/apt/lists/*
 
 # ✅ Download and register Roboto font (using curl for reliability)
