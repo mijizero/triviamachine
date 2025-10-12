@@ -629,7 +629,7 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
                     )
             
                     # Apply 80% opacity
-                    alpha = logo.split()[3].point(lambda p: int(p * 0.8))
+                    alpha = logo.split()[3].point(lambda p: int(p * 1))
                     logo.putalpha(alpha)
             
                     # Center horizontally
@@ -638,7 +638,7 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
                     # Position below text with 30px margin
                     bbox = draw_page.multiline_textbbox((0, 0), page_text, font=font, spacing=15)
                     text_bottom_y = (page_img.height - (bbox[3] - bbox[1])) // 2 + (bbox[3] - bbox[1])
-                    logo_y = text_bottom_y + 30
+                    logo_y = text_bottom_y + 30 + 96
             
                     # Paste logo
                     page_rgba = page_img.convert("RGBA")
