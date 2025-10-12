@@ -445,8 +445,10 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
 
         # --- Page creation ---
         # --- Page creation with minimal transition pause ---
+        from moviepy.editor import CompositeVideoClip
+
         clips = []
-        overlap = 0.05  # seconds of tiny overlap for smooth page switch
+        start_time = 0.0
         
         for i, (page_text, duration) in enumerate(zip(pages, per_page_durations)):
             page_img = img.copy()
@@ -468,17 +470,13 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             page_path = os.path.join(tmpdir, f"page_{i}.png")
             page_img.save(page_path)
         
-            # Slightly extend all but the last clip to ensure smooth transition
-            clip_duration = duration
-            if i < len(pages) - 1:
-                clip_duration += overlap
-        
-            clip = ImageClip(page_path).set_duration(clip_duration)
+            clip = ImageClip(page_path).set_start(start_time).set_duration(duration)
             clips.append(clip)
         
-        # Concatenate with 'compose' to prevent automatic gaps
-        video_clip = concatenate_videoclips(clips, method="compose").set_audio(full_audio_clip)
+            start_time += duration  # next page starts immediately after this audio
         
+        # Use CompositeVideoClip to overlay clips exactly at the correct start times
+        video_clip = CompositeVideoClip(clips, size=img.size).set_audio(full_audio_clip)
         output_path = os.path.join(tmpdir, "trivia_video.mp4")
         video_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", verbose=False, logger=None)
 
