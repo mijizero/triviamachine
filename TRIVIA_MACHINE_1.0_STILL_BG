@@ -33,28 +33,76 @@ from google.cloud import firestore
 # Force Firestore client to use correct project
 firestore_client = firestore.Client(project="trivia-machine-472207", database="(default)")
 
+import re
+import hashlib
+from difflib import SequenceMatcher
+from google.cloud import firestore
+
 db = firestore_client
 FACTS_COLLECTION = "facts_history"
 
-import re
-import hashlib
-
 _seen_facts = set()
+_checked_firestore = False  # ensures Firestore is loaded only once per runtime
+
 
 def normalize_fact(text: str) -> str:
-    """Normalize fact for duplicate detection (ignores word order and punctuation)."""
+    """Normalize text for consistent duplicate checking."""
     text = text.lower()
     text = re.sub(r"[^a-z0-9\s]", "", text)
     words = sorted(text.split())
     return " ".join(words)
 
-def is_duplicate_fact(fact: str) -> bool:
-    """Check and remember if a fact (or reworded version) already appeared."""
+
+def load_seen_facts_from_firestore():
+    """Load all previously used facts from Firestore into memory once."""
+    global _checked_firestore
+    if _checked_firestore:
+        return
+    _checked_firestore = True
+    try:
+        docs = db.collection(FACTS_COLLECTION).stream()
+        for doc in docs:
+            normalized = doc.get("normalized")
+            if normalized:
+                _seen_facts.add(normalized)
+        print(f"✅ Loaded {len(_seen_facts)} facts from Firestore history.")
+    except Exception as e:
+        print(f"⚠️ Could not load facts from Firestore: {e}")
+
+
+def save_fact_to_firestore(fact: str):
+    """Save a new fact to Firestore (for future duplicate detection)."""
     normalized = normalize_fact(fact)
-    digest = hashlib.md5(normalized.encode()).hexdigest()
-    if digest in _seen_facts:
+    try:
+        db.collection(FACTS_COLLECTION).add({
+            "fact": fact,
+            "normalized": normalized
+        })
+    except Exception as e:
+        print(f"⚠️ Could not save fact to Firestore: {e}")
+
+
+def is_duplicate_fact(fact: str, threshold: float = 0.88) -> bool:
+    """
+    Detect duplicates or near-duplicates using normalization and fuzzy similarity.
+    Returns True if the fact already exists or is too similar to an existing one.
+    """
+    load_seen_facts_from_firestore()
+    normalized = normalize_fact(fact)
+
+    # Quick exact match check
+    if normalized in _seen_facts:
         return True
-    _seen_facts.add(digest)
+
+    # Fuzzy similarity check for reworded duplicates
+    for existing in _seen_facts:
+        ratio = SequenceMatcher(None, normalized, existing).ratio()
+        if ratio > threshold:
+            return True
+
+    # If passed both checks → mark as new fact
+    _seen_facts.add(normalized)
+    save_fact_to_firestore(fact)
     return False
 
 def load_recent_facts(limit=10):
