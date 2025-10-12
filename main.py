@@ -10,6 +10,8 @@ import requests
 import random
 import vertexai
 from vertexai.generative_models import GenerativeModel
+from aeneas.executetask import ExecuteTask
+from aeneas.task import Task
 
 # YouTube API
 from google.oauth2.credentials import Credentials
@@ -433,16 +435,45 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
         full_audio_clip = AudioFileClip(audio_path)
         audio_duration = full_audio_clip.duration
 
-        # --- Character-based duration allocation ---
-        def page_weight(text):
-            base = len(text)
-            punctuation = sum(text.count(p) for p in ",.;:!?")
-            quotes = text.count('"') + text.count("'")
-            return base + (2.0 * punctuation) + (3.0 * quotes)
-
-        weights = [page_weight(p) for p in pages]
-        total_weight = sum(weights)
-        per_page_durations = [audio_duration * (w / total_weight) for w in weights]
+        # --- Use Aeneas forced alignment to get exact timings per page ---
+        print("Running Aeneas alignment...")
+        text_path = os.path.join(tmpdir, "fact.txt")
+        with open(text_path, "w", encoding="utf-8") as f:
+            # Write each page (2 lines) on a separate line for alignment
+            for page in pages:
+                f.write(page.replace("\n", " ") + "\n")
+        
+        config_string = "task_language=eng|is_text_type=plain|os_task_file_format=json"
+        task = Task(config_string=config_string)
+        task.audio_file_path_absolute = audio_path
+        task.text_file_path_absolute = text_path
+        task.sync_map_file_path_absolute = os.path.join(tmpdir, "map.json")
+        
+        ExecuteTask(task).execute()
+        task.output_sync_map_file()
+        
+        # --- Parse Aeneas output to derive durations ---
+        with open(task.sync_map_file_path_absolute, "r", encoding="utf-8") as f:
+            sync_map = json.load(f)
+        
+        segments = sync_map.get("fragments", [])
+        per_page_durations = []
+        for i in range(len(pages)):
+            if i < len(segments):
+                start = float(segments[i].get("begin", 0))
+                end = float(segments[i].get("end", 0))
+                per_page_durations.append(max(0.05, end - start))
+            else:
+                per_page_durations.append(1.0)  # fallback
+        
+        # Optional: add a small overlap between pages for seamless flow
+        overlap = 0.15
+        for i in range(1, len(per_page_durations)):
+            per_page_durations[i - 1] = max(0.05, per_page_durations[i - 1] - overlap)
+        
+        # Adjust last page if total is shorter than actual audio
+        if sum(per_page_durations) < audio_duration:
+            per_page_durations[-1] += audio_duration - sum(per_page_durations)
 
         # --- Page creation synced to weighted durations ---
         clips = []
