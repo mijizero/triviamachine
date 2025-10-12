@@ -567,6 +567,30 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
                 if total_video_len > audio_duration:
                     per_page_durations[-1] = max(0.05, per_page_durations[-1] - (total_video_len - audio_duration))
 
+        # --- Prepare logo once (hardcoded GCS path) ---
+        logo_resized = None
+        try:
+            logo_url = "https://storage.googleapis.com/trivia-videos-output/trivia_logo.png"
+            logo_path = os.path.join(tmpdir, "trivia_logo.png")
+            r = requests.get(logo_url, timeout=10)
+            if r.ok:
+                with open(logo_path, "wb") as lf:
+                    lf.write(r.content)
+                logo = Image.open(logo_path).convert("RGBA")
+                # Resize to ~22% of video width
+                target_logo_width = int(img.width * 0.22)
+                aspect_ratio = logo.height / logo.width
+                logo_resized = logo.resize((target_logo_width, int(target_logo_width * aspect_ratio)), Image.LANCZOS)
+                # Apply stronger opacity so it's visible
+                alpha = logo_resized.split()[3].point(lambda p: int(p * 0.85))
+                logo_resized.putalpha(alpha)
+                print(f"✅ Logo loaded and resized to {logo_resized.size}")
+            else:
+                print("⚠️ Logo request returned non-ok status:", r.status_code)
+        except Exception as e:
+            print("⚠️ Failed to download/prepare logo:", e)
+            logo_resized = None
+
         # --- Page creation synced to Aeneas-anchored durations ---
         clips = []
         for i, (page_text, duration) in enumerate(zip(pages, per_page_durations)):
@@ -587,40 +611,27 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
                 align="center"
             )
             
-            # --- Add semi-transparent logo overlay above text ---
+            # --- Add semi-transparent logo overlay above text (flattened) ---
             try:
-                logo_url = "https://storage.googleapis.com/trivia-videos-output/trivia_logo.png"
-                logo_path = os.path.join(tmpdir, "trivia_logo.png")
-                r = requests.get(logo_url, timeout=10)
-                if r.ok:
-                    with open(logo_path, "wb") as lf:
-                        lf.write(r.content)
-                    logo = Image.open(logo_path).convert("RGBA")
-            
-                    # Resize to ~20–25% of video width
-                    target_logo_width = int(page_img.width * 0.22)
-                    aspect_ratio = logo.height / logo.width
-                    logo = logo.resize((target_logo_width, int(target_logo_width * aspect_ratio)), Image.LANCZOS)
-            
-                    # Apply opacity (60%)
-                    logo = logo.copy()
-                    alpha = logo.split()[3]
-                    alpha = alpha.point(lambda p: int(p * 0.6))
-                    logo.putalpha(alpha)
-            
-                    # Position logo centered just above text
+                if logo_resized is not None:
+                    logo = logo_resized
                     logo_x = (page_img.width - logo.width) // 2
-                    logo_y = max(40, int(y - logo.height - 40))
-            
-                    # Composite correctly
-                    page_img = page_img.convert("RGBA")
-                    page_img.alpha_composite(logo, (logo_x, logo_y))
-            
+                    logo_y = max(20, int(y - logo.height - 30))  # above text, not off-screen
+
+                    # Ensure RGBA, paste logo using its alpha then flatten to RGB
+                    page_rgba = page_img.convert("RGBA")
+                    page_rgba.paste(logo, (logo_x, logo_y), logo)
+                    page_img = page_rgba.convert("RGB")
+                    print(f"✅ Pasted logo on page {i} at ({logo_x},{logo_y})")
+                else:
+                    # keep page_img as-is
+                    page_img = page_img.convert("RGB")
             except Exception as e:
-                print("⚠️ Logo overlay failed:", e)
+                print("⚠️ Logo overlay failed on page", i, ":", e)
+                page_img = page_img.convert("RGB")
             
             page_path = os.path.join(tmpdir, f"page_{i}.png")
-            page_img.convert("RGB").save(page_path)
+            page_img.save(page_path)
             
             clip = ImageClip(page_path).set_duration(duration)
             clips.append(clip)
