@@ -628,24 +628,31 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
                         Image.LANCZOS
                     )
             
+                    # Ensure logo is RGBA
+                    logo = logo.convert("RGBA")
+            
                     # Apply 80% opacity
-                    alpha = logo.split()[3].point(lambda p: int(p * 0.3))
+                    alpha = logo.split()[3].point(lambda p: int(p * 0.8))
                     logo.putalpha(alpha)
             
                     # Center horizontally
                     logo_x = (page_img.width - logo.width) // 2
             
-                    # Fixed Y position (e.g., 70% down the screen)
-                    logo_y = int(page_img.height * 0.7)  
+                    # Fixed Y position (80% down)
+                    logo_y = int(page_img.height * 0.8)
             
-                    # Paste logo
+                    # Ensure base image is RGBA
                     page_rgba = page_img.convert("RGBA")
-                    page_rgba.paste(logo, (logo_x, logo_y), logo)
+            
+                    # Paste logo using alpha as mask
+                    page_rgba.paste(logo, (logo_x, logo_y), mask=logo)
+            
+                    # Convert back to RGB for final saving
                     page_img = page_rgba.convert("RGB")
             
-                    print(f"✅ Logo pasted below text on page {i} at ({logo_x},{logo_y})")
+                    print(f"✅ Logo pasted with 80% opacity at ({logo_x},{logo_y})")
                 except Exception as e:
-                    print(f"⚠️ Failed to paste logo on page {i}: {e}")
+                    print(f"⚠️ Failed to paste logo: {e}")
         
             # --- Flatten and save ---
             page_img_rgb = page_img.convert("RGB")
