@@ -586,6 +586,35 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
                 stroke_fill="black",
                 align="center"
             )
+            
+            # --- Add semi-transparent logo overlay above text ---
+            try:
+                logo_url = "https://storage.googleapis.com/trivia-videos-output/trivia_logo.png"
+                logo_path = os.path.join(tmpdir, "trivia_logo.png")
+                r = requests.get(logo_url, timeout=10)
+                if r.ok:
+                    with open(logo_path, "wb") as lf:
+                        lf.write(r.content)
+                    logo = Image.open(logo_path).convert("RGBA")
+            
+                    # Resize logo to fit nicely (about 25% of image width)
+                    target_logo_width = int(page_img.width * 0.25)
+                    aspect_ratio = logo.height / logo.width
+                    new_logo_size = (target_logo_width, int(target_logo_width * aspect_ratio))
+                    logo = logo.resize(new_logo_size, Image.LANCZOS)
+            
+                    # Apply opacity
+                    alpha = logo.split()[3]
+                    alpha = alpha.point(lambda p: p * 0.5)  # 50% opacity
+                    logo.putalpha(alpha)
+            
+                    # Position logo centered above text
+                    logo_x = (page_img.width - logo.width) // 2
+                    logo_y = max(50, int(y - logo.height - 80))  # slightly above text
+                    page_img.paste(logo, (logo_x, logo_y), logo)
+            except Exception as e:
+                print("⚠️ Logo overlay failed:", e)
+            
             page_path = os.path.join(tmpdir, f"page_{i}.png")
             page_img.save(page_path)
             clip = ImageClip(page_path).set_duration(duration)
