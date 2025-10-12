@@ -24,8 +24,7 @@ RUN apt-get update && apt-get install -y \
     zlib1g-dev \
     imagemagick \
     wget \
-    curl \
-    && pip install numpy aeneas \ 
+    curl \ 
     && rm -rf /var/lib/apt/lists/*
 
 # ✅ Download and register Roboto font (using curl for reliability)
