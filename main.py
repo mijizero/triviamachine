@@ -577,14 +577,15 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
                 with open(logo_path, "wb") as lf:
                     lf.write(r.content)
                 logo = Image.open(logo_path).convert("RGBA")
-                # Resize to ~22% of video width
-                target_logo_width = int(img.width * 0.22)
-                aspect_ratio = logo.height / logo.width
-                logo_resized = logo.resize((target_logo_width, int(target_logo_width * aspect_ratio)), Image.LANCZOS)
-                # Apply stronger opacity so it's visible
-                alpha = logo_resized.split()[3].point(lambda p: int(p * 0.85))
+                
+                # Resize to 50% of original
+                logo_resized = logo.resize((logo.width // 2, logo.height // 2), Image.LANCZOS)
+                
+                # Apply 80% opacity
+                alpha = logo_resized.split()[3].point(lambda p: int(p * 0.8))
                 logo_resized.putalpha(alpha)
-                print(f"✅ Logo loaded and resized to {logo_resized.size}")
+                
+                print(f"✅ Logo loaded, resized to {logo_resized.size} with 80% opacity")
             else:
                 print("⚠️ Logo request returned non-ok status:", r.status_code)
         except Exception as e:
