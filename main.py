@@ -597,26 +597,31 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
                         lf.write(r.content)
                     logo = Image.open(logo_path).convert("RGBA")
             
-                    # Resize logo to fit nicely (about 25% of image width)
-                    target_logo_width = int(page_img.width * 0.25)
+                    # Resize to ~20–25% of video width
+                    target_logo_width = int(page_img.width * 0.22)
                     aspect_ratio = logo.height / logo.width
-                    new_logo_size = (target_logo_width, int(target_logo_width * aspect_ratio))
-                    logo = logo.resize(new_logo_size, Image.LANCZOS)
+                    logo = logo.resize((target_logo_width, int(target_logo_width * aspect_ratio)), Image.LANCZOS)
             
-                    # Apply opacity
+                    # Apply opacity (60%)
+                    logo = logo.copy()
                     alpha = logo.split()[3]
-                    alpha = alpha.point(lambda p: p * 0.5)  # 50% opacity
+                    alpha = alpha.point(lambda p: int(p * 0.6))
                     logo.putalpha(alpha)
             
-                    # Position logo centered above text
+                    # Position logo centered just above text
                     logo_x = (page_img.width - logo.width) // 2
-                    logo_y = max(50, int(y - logo.height - 80))  # slightly above text
-                    page_img.paste(logo, (logo_x, logo_y), logo)
+                    logo_y = max(40, int(y - logo.height - 40))
+            
+                    # Composite correctly
+                    page_img = page_img.convert("RGBA")
+                    page_img.alpha_composite(logo, (logo_x, logo_y))
+            
             except Exception as e:
                 print("⚠️ Logo overlay failed:", e)
             
             page_path = os.path.join(tmpdir, f"page_{i}.png")
-            page_img.save(page_path)
+            page_img.convert("RGB").save(page_path)
+            
             clip = ImageClip(page_path).set_duration(duration)
             clips.append(clip)
 
