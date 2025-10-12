@@ -431,22 +431,72 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
         page_audio_clips = []
         per_page_durations = []
 
+        # Helper: trim leading/trailing near-silence from an AudioFileClip
+        def trim_silence(af_clip: AudioFileClip, thresh=0.003, sample_rate=22050):
+            """Return af_clip.subclip(start, end) with near-silence trimmed.
+               thresh: normalized amplitude threshold (0..1). sample_rate: fps to sample for detection.
+            """
+            try:
+                arr = af_clip.to_soundarray(fps=sample_rate)
+            except Exception:
+                # if to_soundarray fails, bail to original
+                return af_clip
+
+            if arr.size == 0:
+                return af_clip
+
+            # compute mono amplitude envelope
+            if arr.ndim == 2:
+                amp = (abs(arr).max(axis=1))
+            else:
+                amp = abs(arr)
+            max_amp = amp.max() if amp.max() > 0 else 1.0
+            amp_norm = amp / max_amp
+
+            above = (amp_norm > thresh)
+            if not above.any():
+                return af_clip
+
+            first_idx = int(above.argmax())
+            last_idx = int(len(above) - 1 - above[::-1].argmax())
+            start_sec = max(0.0, first_idx / sample_rate)
+            end_sec = min(af_clip.duration, (last_idx + 1) / sample_rate)
+
+            # don't trim to near-zero
+            if end_sec - start_sec < 0.02:
+                return af_clip
+
+            try:
+                return af_clip.subclip(start_sec, end_sec)
+            except Exception:
+                return af_clip
+
         for i, page_text in enumerate(pages):
             page_text_clean = page_text.strip()
             page_audio_path = os.path.join(tmpdir, f"audio_page_{i}.mp3")
             synthesize_speech(page_text_clean, page_audio_path)
             page_audio_clip = AudioFileClip(page_audio_path)
-            page_audio_clips.append(page_audio_clip)
-            per_page_durations.append(page_audio_clip.duration)
 
-        # Concatenate all page audios
-        full_audio_clip = concatenate_audioclips(page_audio_clips)
+            # Trim leading/trailing silence aggressively but safely
+            trimmed = trim_silence(page_audio_clip, thresh=0.003, sample_rate=22050)
+
+            # Safety: If trimmed leads to extremely short clip, keep original
+            final_clip = trimmed if trimmed.duration >= 0.04 else page_audio_clip
+
+            page_audio_clips.append(final_clip)
+            per_page_durations.append(final_clip.duration)
+
+        # Concatenate all page audios (trimmed)
+        if len(page_audio_clips) == 0:
+            raise RuntimeError("No page audio clips generated.")
+        if len(page_audio_clips) == 1:
+            full_audio_clip = page_audio_clips[0]
+        else:
+            full_audio_clip = concatenate_audioclips(page_audio_clips)
         audio_duration = full_audio_clip.duration
 
         # --- Page creation ---
-        # --- Page creation with minimal transition pause ---
-        transition_offset = 2.0  # seconds to start next page sooner
-
+        # Use trimmed per-page durations so video and audio remain continuous (no pause)
         clips = []
         for i, (page_text, duration) in enumerate(zip(pages, per_page_durations)):
             page_img = img.copy()
@@ -467,15 +517,19 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             )
             page_path = os.path.join(tmpdir, f"page_{i}.png")
             page_img.save(page_path)
-        
-            # Reduce duration for faster page transition (except last page)
-            clip_duration = duration
-            if i < len(pages) - 1:
-                clip_duration = max(0.05, duration - transition_offset)
-        
+
+            # Use trimmed duration for page clip (no additional subtraction)
+            clip_duration = max(0.05, duration)
             clip = ImageClip(page_path).set_duration(clip_duration)
             clips.append(clip)
-        
+
+        # If total video shorter than audio due to rounding, extend last clip
+        total_video_len = sum(getattr(c, "duration", 0) for c in clips)
+        if total_video_len < audio_duration - 0.001 and len(clips) > 0:
+            extra = audio_duration - total_video_len
+            last = clips[-1]
+            clips[-1] = last.set_duration(last.duration + extra)
+
         video_clip = concatenate_videoclips(clips).set_audio(full_audio_clip)
         output_path = os.path.join(tmpdir, "trivia_video.mp4")
         video_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", verbose=False, logger=None)
