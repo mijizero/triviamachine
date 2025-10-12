@@ -1,4 +1,4 @@
-# Use Python base image
+# Use Python 3.10 base (Aeneas doesn't support 3.12+)
 FROM python:3.10-slim
 
 # Prevent Python from writing .pyc files and buffering stdout/stderr
@@ -7,7 +7,11 @@ ENV OUTPUT_BUCKET=trivia-videos-output
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
-    ffmpeg espeak libxml2-dev libxslt-dev git  \
+    ffmpeg \
+    espeak \
+    libxml2-dev \
+    libxslt-dev \
+    git \
     libavcodec-extra \
     fonts-dejavu-core \
     fontconfig \
@@ -18,9 +22,8 @@ RUN apt-get update && apt-get install -y \
     zlib1g-dev \
     imagemagick \
     wget \
-    curl \ 
-    && pip install numpy==1.24.4 aeneas \
-    && rm -rf /var/lib/apt/lists/*
+    curl \
+ && rm -rf /var/lib/apt/lists/*
 
 # ✅ Download and register Roboto font (using curl for reliability)
 RUN mkdir -p /usr/share/fonts/truetype/roboto && \
@@ -28,16 +31,26 @@ RUN mkdir -p /usr/share/fonts/truetype/roboto && \
     -o /usr/share/fonts/truetype/roboto/Roboto-Regular.ttf && \
     fc-cache -f -v
 
+# Upgrade pip and build tools
+RUN python3 -m pip install --upgrade pip setuptools wheel
+
+# 🩵 Install numpy first (Aeneas needs it pre-installed)
+RUN pip install numpy==1.24.4
+
+# 🩵 Install Aeneas after numpy
+RUN pip install aeneas==1.7.3.0
+
 # Set working directory
 WORKDIR /app
 
-# Copy requirements first (for caching)
+# Copy requirements early for caching efficiency
 COPY requirements.txt .
-RUN pip install --upgrade pip setuptools wheel
+
+# 🩵 Install project dependencies (avoids redundant installs)
 RUN pip install --no-cache-dir -r requirements.txt
 RUN pip install moviepy
 
-# Copy app source including credentials.json
+# Copy app source including Roboto font and credentials
 COPY Roboto-Regular.ttf /app/
 COPY . .
 
