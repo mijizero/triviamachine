@@ -620,18 +620,34 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             # --- Paste huge logo above text (testing) ---
             if logo_resized is not None:
                 try:
-                    # Enlarge logo dramatically for testing
-                    huge_width = int(img.width * 0.8)  # 80% of video width
+                    # Resize to 20% of video width
+                    target_logo_width = int(page_img.width * 0.2)
                     aspect_ratio = logo_resized.height / logo_resized.width
-                    huge_logo = logo_resized.resize((huge_width, int(huge_width * aspect_ratio)), Image.LANCZOS)
+                    logo = logo_resized.resize(
+                        (target_logo_width, int(target_logo_width * aspect_ratio)),
+                        Image.LANCZOS
+                    )
             
-                    logo_x = (page_img.width - huge_logo.width) // 2
-                    logo_y = max(10, text_y - huge_logo.height - 10)  # small margin above text
+                    # Apply 80% opacity
+                    alpha = logo.split()[3].point(lambda p: int(p * 0.8))
+                    logo.putalpha(alpha)
             
-                    page_img.paste(huge_logo, (int(logo_x), int(logo_y)), huge_logo)
-                    print(f"🔥 HUGE Logo pasted on page {i} at ({int(logo_x)},{int(logo_y)})")
+                    # Center horizontally
+                    logo_x = (page_img.width - logo.width) // 2
+            
+                    # Position below text with 30px margin
+                    bbox = draw_page.multiline_textbbox((0, 0), page_text, font=font, spacing=15)
+                    text_bottom_y = (page_img.height - (bbox[3] - bbox[1])) // 2 + (bbox[3] - bbox[1])
+                    logo_y = text_bottom_y + 30
+            
+                    # Paste logo
+                    page_rgba = page_img.convert("RGBA")
+                    page_rgba.paste(logo, (logo_x, logo_y), logo)
+                    page_img = page_rgba.convert("RGB")
+            
+                    print(f"✅ Logo pasted below text on page {i} at ({logo_x},{logo_y})")
                 except Exception as e:
-                    print(f"⚠️ Failed to paste huge logo on page {i}: {e}")
+                    print(f"⚠️ Failed to paste logo on page {i}: {e}")
         
             # --- Flatten and save ---
             page_img_rgb = page_img.convert("RGB")
