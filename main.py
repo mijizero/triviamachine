@@ -631,15 +631,15 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
                     # Ensure logo is RGBA
                     logo = logo.convert("RGBA")
             
-                    # Apply 80% opacity
-                    alpha = logo.split()[3].point(lambda p: int(p * 0.8))
+                    # Apply 90% opacity
+                    alpha = logo.split()[3].point(lambda p: int(p * 0.9))
                     logo.putalpha(alpha)
             
                     # Center horizontally
                     logo_x = (page_img.width - logo.width) // 2
             
-                    # Fixed Y position (80% down)
-                    logo_y = int(page_img.height * 0.8)
+                    # Fixed Y position (70% down)
+                    logo_y = int(page_img.height * 0.7)
             
                     # Ensure base image is RGBA
                     page_rgba = page_img.convert("RGBA")
