@@ -9,7 +9,7 @@ ENV OUTPUT_BUCKET=trivia-videos-output
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     espeak \
-    libespeak-dev \        # 🩵 FIX: add this to resolve -lespeak linker error
+    libespeak-dev \
     libxml2-dev \
     libxslt-dev \
     git \
