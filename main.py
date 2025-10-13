@@ -12,6 +12,7 @@ import vertexai
 from vertexai.generative_models import GenerativeModel
 from aeneas.executetask import ExecuteTask
 from aeneas.task import Task
+import numpy as np 
 
 # YouTube API
 from google.oauth2.credentials import Credentials
