@@ -378,7 +378,12 @@ def is_similar(a, b, threshold=0.8):
     return SequenceMatcher(None, a.lower(), b.lower()).ratio() > threshold
 
 def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/output.mp4"):
-    from moviepy.editor import VideoFileClip, ImageClip, CompositeVideoClip, concatenate_videoclips, AudioFileClip, vfx
+    import numpy as np
+    import sys
+    from moviepy.editor import (
+        VideoFileClip, ImageClip, CompositeVideoClip, concatenate_videoclips,
+        AudioFileClip, vfx
+    )
 
     with tempfile.TemporaryDirectory() as tmpdir:
         # Compatibility shim: Pillow 10 removed Image.ANTIALIAS; MoviePy sometimes references it.
@@ -489,7 +494,7 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
                 raise
 
         # --- Resize/crop image to 1080x1920 if needed (only for image backgrounds) ---
-        target_size = (1080, 1920)  # width, height
+        target_size = (1080, 1920)
         if not valid_video:
             img = Image.open(bg_path).convert("RGB")
             img_ratio = img.width / img.height
@@ -508,10 +513,7 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             bg_path = os.path.join(tmpdir, "background_resized.jpg")
             img.save(bg_path)
 
-        # === Everything below this line remains functionally aligned with your previous implementation ===
-
         # --- Split fact text into pages ---
-        # Use a draw object on a dummy image for measuring text
         measure_img = Image.new("RGB", target_size, "black")
         draw = ImageDraw.Draw(measure_img)
         font = ImageFont.truetype("Roboto-Regular.ttf", 55)
@@ -569,7 +571,6 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
                 per_page_durations.append(1.0)
                 aeneas_starts.append(sum(per_page_durations[:-1]))
 
-        # correction loop for sync (keep your logic)
         video_starts = []
         acc = 0.0
         for d in per_page_durations:
@@ -588,7 +589,7 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
         if total_video_len < audio_duration:
             per_page_durations[-1] += (audio_duration - total_video_len)
 
-        # --- Prepare logo once (hardcoded GCS path) ---
+        # --- Prepare logo ---
         logo_resized = None
         try:
             logo_url = "https://storage.googleapis.com/trivia-videos-output/trivia_logo.png"
@@ -602,28 +603,21 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
                 alpha = logo_resized.split()[3].point(lambda p: int(p * 0.8))
                 logo_resized.putalpha(alpha)
                 print(f"✅ Logo loaded, resized to {logo_resized.size} with 80% opacity")
-            else:
-                print("⚠️ Logo request returned non-ok status:", r.status_code)
         except Exception as e:
-            print("⚠️ Failed to download/prepare logo:", e)
-            logo_resized = None
+            print("⚠️ Failed to prepare logo:", e)
 
         # --- Page creation & composition ---
         clips = []
         for i, (page_text, duration) in enumerate(zip(pages, per_page_durations)):
-            # Prepare background/base_clip (video looped or static image)
             if valid_video:
                 clip = VideoFileClip(video_path).without_audio()
-                # Resize to cover target size while keeping aspect ratio
                 clip = clip.resize(height=target_size[1])
                 if clip.w < target_size[0]:
                     clip = clip.resize(width=target_size[0])
-                # center-crop if necessary
                 if (int(clip.w), int(clip.h)) != target_size:
                     x1 = int((clip.w - target_size[0]) / 2)
                     y1 = int((clip.h - target_size[1]) / 2)
                     clip = clip.crop(x1=x1, y1=y1, width=target_size[0], height=target_size[1])
-                # loop or trim to duration
                 if clip.duration < duration:
                     base_clip = clip.loop(duration=duration).set_duration(duration)
                 else:
@@ -631,7 +625,6 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
             else:
                 base_clip = ImageClip(bg_path).set_duration(duration).resize(newsize=target_size)
 
-            # Build overlay PIL image (transparent) with text + logo
             overlay_img = Image.new("RGBA", target_size, (0, 0, 0, 0))
             draw_page = ImageDraw.Draw(overlay_img)
             bbox = draw_page.multiline_textbbox((0, 0), page_text, font=font, spacing=15)
@@ -650,35 +643,40 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
                 align="center"
             )
 
-            # Paste logo centered and below text (fixed spot)
             if logo_resized is not None:
-                try:
-                    target_logo_width = int(target_size[0] * 0.24)
-                    aspect_ratio = logo_resized.height / logo_resized.width
-                    logo_img = logo_resized.resize(
-                        (target_logo_width, int(target_logo_width * aspect_ratio)),
-                        Image.LANCZOS
-                    ).convert("RGBA")
-                    # ensure a final alpha tweak (keeps it visible)
-                    alpha = logo_img.split()[3].point(lambda p: int(p * 0.8))
-                    logo_img.putalpha(alpha)
-                    logo_x = (target_size[0] - logo_img.width) // 2
-                    logo_y = int(target_size[1] * 0.63)
-                    overlay_img.paste(logo_img, (logo_x, logo_y), logo_img)
-                except Exception as e:
-                    print(f"⚠️ Failed to paste logo: {e}")
+                target_logo_width = int(target_size[0] * 0.24)
+                aspect_ratio = logo_resized.height / logo_resized.width
+                logo_img = logo_resized.resize(
+                    (target_logo_width, int(target_logo_width * aspect_ratio)),
+                    Image.LANCZOS
+                ).convert("RGBA")
+                alpha = logo_img.split()[3].point(lambda p: int(p * 0.8))
+                logo_img.putalpha(alpha)
+                logo_x = (target_size[0] - logo_img.width) // 2
+                logo_y = int(target_size[1] * 0.63)
+                overlay_img.paste(logo_img, (logo_x, logo_y), logo_img)
 
-            # Convert overlay to ImageClip
             overlay = ImageClip(np.array(overlay_img)).set_duration(duration).set_position(("center", "center"))
-
-            # Composite overlay over base_clip
             composed = CompositeVideoClip([base_clip, overlay], size=target_size).set_duration(duration)
             clips.append(composed)
 
-        # Concatenate clips sequentially and attach audio
         final_video = concatenate_videoclips(clips).set_audio(full_audio_clip)
         output_path = os.path.join(tmpdir, "trivia_video.mp4")
-        final_video.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", verbose=False, logger=None)
+
+        print("🎬 Starting final video render...")
+        sys.stdout.flush()
+
+        final_video.write_videofile(
+            output_path,
+            fps=24,
+            codec="libx264",
+            audio_codec="aac",
+            verbose=True,
+            logger=None
+        )
+
+        print("✅ Video render complete, uploading...")
+        sys.stdout.flush()
 
         gs_url, https_url = upload_to_gcs(output_path, output_gcs_path)
         return gs_url, https_url
