@@ -198,13 +198,11 @@ def get_unique_fact(max_attempts: int = 6):
     Generate or fetch a fact that is not an exact duplicate of any seen fact.
     Saves the fact when chosen.
     """
-    recent = load_recent_facts()
+    load_seen_facts_from_sources()  # Ensure seen facts are loaded
     for _ in range(max_attempts):
         fact, source_code = get_dynamic_fact()
         # Exact-string checks only (no normalization / fuzzy)
         if is_duplicate_fact(fact):
-            continue
-        if fact in recent:
             continue
         # Save and return
         save_fact_to_firestore(fact)
