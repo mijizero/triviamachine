@@ -12,6 +12,10 @@ import vertexai
 from vertexai.generative_models import GenerativeModel
 from aeneas.executetask import ExecuteTask
 from aeneas.task import Task
+from google.cloud import firestore
+import re
+import hashlib
+from difflib import SequenceMatcher
 
 # YouTube API
 from google.oauth2.credentials import Credentials
@@ -28,22 +32,19 @@ vertexai.init(project="trivia-machine-472207", location="asia-southeast1")
 # -------------------------------
 # Dynamic Fact (Firestore version)
 # -------------------------------
-from google.cloud import firestore
-
 # Force Firestore client to use correct project
 firestore_client = firestore.Client(project="trivia-machine-472207", database="(default)")
-
-import re
-import hashlib
-from difflib import SequenceMatcher
-from google.cloud import firestore
 
 db = firestore_client
 FACTS_COLLECTION = "facts_history"
 
-_seen_facts = set()
-_checked_firestore = False  # ensures Firestore is loaded only once per runtime
+# -------------------------------
+# Firestore / duplicate-prevention helpers (REPLACE THESE)
+# -------------------------------
 
+_seen_facts = set()
+_seen_map = {}            # normalized -> example original fact (for semantic checks)
+_checked_firestore = False  # ensures Firestore is loaded only once per runtime
 
 def normalize_fact(text: str) -> str:
     """Normalize text for consistent duplicate checking."""
@@ -53,25 +54,47 @@ def normalize_fact(text: str) -> str:
     return " ".join(words)
 
 
-def load_seen_facts_from_firestore():
-    """Load all previously used facts from Firestore into memory once."""
-    global _checked_firestore
+def load_seen_facts_from_firestore(max_load: int = 10000):
+    """
+    Load previously used facts from Firestore into memory once.
+    Keeps a set of normalized strings and a sample map to original facts.
+    The max_load parameter caps how many documents to read to avoid memory blowups.
+    """
+    global _checked_firestore, _seen_facts, _seen_map
     if _checked_firestore:
         return
     _checked_firestore = True
     try:
-        docs = db.collection(FACTS_COLLECTION).stream()
-        for doc in docs:
-            normalized = doc.get("normalized")
+        docs_iter = db.collection(FACTS_COLLECTION).order_by("timestamp", direction=firestore.Query.DESCENDING).limit(max_load).stream()
+        count = 0
+        for doc in docs_iter:
+            if count >= max_load:
+                break
+            doc_dict = doc.to_dict() or {}
+            normalized = doc_dict.get("normalized")
+            fact_text = doc_dict.get("fact")
             if normalized:
                 _seen_facts.add(normalized)
-        print(f"✅ Loaded {len(_seen_facts)} facts from Firestore history.")
+                # store one representative original (overwrite is harmless)
+                if normalized not in _seen_map and fact_text:
+                    _seen_map[normalized] = fact_text
+            elif fact_text:
+                # backfill safety: normalize and add to memory (don't write back here)
+                n = normalize_fact(fact_text)
+                _seen_facts.add(n)
+                if n not in _seen_map:
+                    _seen_map[n] = fact_text
+            count += 1
+        print(f"✅ Loaded {_seen_facts.__len__()} facts from Firestore history (sample_map size {_seen_map.__len__()}).")
     except Exception as e:
         print(f"⚠️ Could not load facts from Firestore: {e}")
 
 
 def save_fact_to_firestore(fact: str):
-    """Save a new fact to Firestore with normalized field and timestamp."""
+    """
+    Save a new fact to Firestore with normalized field and timestamp.
+    Also keep the in-memory caches in sync.
+    """
     normalized = normalize_fact(fact)
     try:
         db.collection(FACTS_COLLECTION).add({
@@ -79,33 +102,113 @@ def save_fact_to_firestore(fact: str):
             "normalized": normalized,
             "timestamp": firestore.SERVER_TIMESTAMP
         })
-        _seen_facts.add(normalized)  # Optional: keep memory in sync
+        _seen_facts.add(normalized)
+        # keep an example original text for semantic checks
+        _seen_map.setdefault(normalized, fact)
     except Exception as e:
         print(f"⚠️ Could not save fact to Firestore: {e}")
 
 
-def is_duplicate_fact(fact: str, threshold: float = 0.88) -> bool:
+def is_duplicate_fact(fact: str, threshold: float = 0.88, top_k: int = 10) -> bool:
     """
-    Detect duplicates or near-duplicates using normalization and fuzzy similarity.
-    Returns True if the fact already exists or is too similar to an existing one.
+    Detect duplicates or near-duplicates using:
+      1) exact normalized match
+      2) fuzzy similarity across cached normalized facts
+      3) semantic check via Gemini against top_k most similar candidates
+
+    IMPORTANT: This function only *checks* and DOES NOT save new facts.
+    The caller (e.g., get_unique_fact) should decide when to save.
     """
     load_seen_facts_from_firestore()
     normalized = normalize_fact(fact)
 
-    # Quick exact match check
+    # 1) exact normalized match
     if normalized in _seen_facts:
         return True
 
-    # Fuzzy similarity check for reworded duplicates
+    # 2) quick fuzzy similarity (cheap, local)
+    # gather the most similar existing normalized strings
+    scored = []
     for existing in _seen_facts:
-        ratio = SequenceMatcher(None, normalized, existing).ratio()
-        if ratio > threshold:
+        # quick filter: length ratio (skip extremely different lengths)
+        if not existing:
+            continue
+        score = SequenceMatcher(None, normalized, existing).ratio()
+        if score >= 0.75:  # candidate threshold for semantic check
+            scored.append((score, existing))
+    # If any are already highly similar (over threshold), mark duplicate
+    for score, _ in scored:
+        if score >= threshold:
             return True
 
-    # If passed both checks → mark as new fact
-    _seen_facts.add(normalized)
+    # If we have no good candidates from fuzzy, return False quickly
+    if not scored:
+        return False
+
+    # 3) Use Gemini to do a semantic/meaning check against the top_k candidates
+    # pick top_k highest-scoring candidates
+    scored.sort(reverse=True)
+    top_candidates = [cand for _, cand in scored[:top_k]]
+
+    # Build a concise prompt: ask the model to answer YES if the NEW fact
+    # is a duplicate/rephrasing of ANY of the numbered candidates.
+    # Keep the prompt short and explicit; expect a YES/NO reply.
+    candidate_texts = []
+    for i, n in enumerate(top_candidates, start=1):
+        candidate_texts.append(f"{i}. {_seen_map.get(n, n)}")
+    candidates_block = "\n".join(candidate_texts)
+
+    fact_clean = fact.strip()
+    prompt = (
+        "You are a strict duplicate-detection assistant. "
+        "Given a NEW trivia fact and a short numbered list of EXISTING facts, "
+        "answer ONLY with 'YES' if the NEW fact is the same or a close rewording of any existing fact, "
+        "otherwise answer ONLY with 'NO'. Do not add any explanation.\n\n"
+        f"NEW fact:\n{fact_clean}\n\n"
+        f"EXISTING facts:\n{candidates_block}\n\n"
+        "Answer YES or NO."
+    )
+
+    try:
+        model = GenerativeModel("gemini-2.5-flash")
+        response = model.generate_content(prompt)
+        text = (response.text or "").strip().lower()
+        if text.startswith("yes"):
+            return True
+        if text.startswith("no"):
+            return False
+        # fallback: if model didn't respond cleanly, be conservative and treat as not duplicate
+        return False
+    except Exception as e:
+        # if the LLM check fails, fall back to our fuzzy result (conservative choice: return False)
+        print(f"⚠️ Gemini semantic duplicate check failed: {e}")
+        return False
+
+
+def get_unique_fact(max_attempts: int = 6):
+    """
+    Generate or fetch a fact that passes duplicate checks.
+    Returns (fact_text, source_code). Caller must save the returned fact via save_fact_to_firestore().
+    """
+    recent = load_recent_facts()
+    for _ in range(max_attempts):
+        fact, source_code = get_dynamic_fact()
+        # pre-filter by normalized + recent list
+        if normalize_fact(fact) in _seen_facts:
+            continue
+        if fact in recent:
+            continue
+        # semantic + fuzzy duplicate check
+        if is_duplicate_fact(fact):
+            continue
+        # If passed checks, caller will save it
+        save_fact_to_firestore(fact)
+        return fact, source_code
+
+    # fallback: if we couldn't find a non-duplicate after attempts, return last generated (and save)
+    fact, source_code = get_dynamic_fact()
     save_fact_to_firestore(fact)
-    return False
+    return fact, source_code
 
 
 def load_recent_facts(limit=10):
@@ -118,17 +221,6 @@ def load_recent_facts(limit=10):
         print("Error loading facts from Firestore:", str(e))
         return []
 
-def get_unique_fact():
-    recent = load_recent_facts()
-    for _ in range(5):
-        fact, source_code = get_dynamic_fact()
-        if not is_duplicate_fact(fact) and fact not in recent:
-            save_fact_to_firestore(fact)  # <--- Use this only
-            return fact, source_code
-    # fallback if all failed
-    fact, source_code = get_dynamic_fact()
-    save_fact_to_firestore(fact)
-    return fact, source_code
 
 def get_dynamic_fact():
     """Try the 4 sources in random order and return (fact_text, source_label).
