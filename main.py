@@ -39,269 +39,186 @@ db = firestore_client
 FACTS_COLLECTION = "facts_history"
 
 # -------------------------------
-# Firestore / duplicate-prevention helpers (REPLACE THESE)
+# Firestore / duplicate-prevention helpers (REPLACED)
+# - Uses a persisted JSON file in GCS to store all seen facts (exact strings).
+# - On first load we also seed from a recent Firestore snapshot.
+# - No normalization/fuzzy/Gemini checks as requested.
 # -------------------------------
 
-_seen_facts = set()
-_seen_map = {}            # normalized -> example original fact (for semantic checks)
-_checked_firestore = False  # ensures Firestore is loaded only once per runtime
+# GCS location for the persisted seen facts JSON
+_GCS_SEEN_PATH = "gs://trivia-videos-output/seen_facts.json"
 
-def normalize_fact(text: str) -> str:
-    """Normalize text for consistent duplicate checking."""
-    text = text.lower()
-    text = re.sub(r"[^a-z0-9\s]", "", text)
-    words = sorted(text.split())
-    return " ".join(words)
+_seen_facts = set()     # set of exact fact strings
+_checked_seen_source = False  # ensure load happens only once per runtime
 
 
-def load_seen_facts_from_firestore(max_load: int = 10000):
-    """
-    Load previously used facts from Firestore into memory once.
-    Keeps a set of normalized strings and a sample map to original facts.
-    The max_load parameter caps how many documents to read to avoid memory blowups.
-    """
-    global _checked_firestore, _seen_facts, _seen_map
-    if _checked_firestore:
-        return
-    _checked_firestore = True
+def _gcs_path_to_bucket_blob(gcs_path):
+    """Helper: split gs://bucket/path -> (bucket, blob_path)"""
+    if not gcs_path.startswith("gs://"):
+        raise ValueError("gcs path must start with gs://")
+    parts = gcs_path[5:].split("/", 1)
+    bucket_name = parts[0]
+    blob_path = parts[1] if len(parts) > 1 else ""
+    return bucket_name, blob_path
+
+
+def _download_seen_json_from_gcs(tmp_path):
+    """Try to download seen_facts.json from GCS to tmp_path. Returns True if successful."""
     try:
-        docs_iter = db.collection(FACTS_COLLECTION).order_by("timestamp", direction=firestore.Query.DESCENDING).limit(max_load).stream()
-        count = 0
-        for doc in docs_iter:
-            if count >= max_load:
-                break
-            doc_dict = doc.to_dict() or {}
-            normalized = doc_dict.get("normalized")
-            fact_text = doc_dict.get("fact")
-            if normalized:
-                _seen_facts.add(normalized)
-                # store one representative original (overwrite is harmless)
-                if normalized not in _seen_map and fact_text:
-                    _seen_map[normalized] = fact_text
-            elif fact_text:
-                # backfill safety: normalize and add to memory (don't write back here)
-                n = normalize_fact(fact_text)
-                _seen_facts.add(n)
-                if n not in _seen_map:
-                    _seen_map[n] = fact_text
-            count += 1
-        print(f"✅ Loaded {_seen_facts.__len__()} facts from Firestore history (sample_map size {_seen_map.__len__()}).")
+        client = storage.Client()
+        bucket_name, blob_path = _gcs_path_to_bucket_blob(_GCS_SEEN_PATH)
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(blob_path)
+        if not blob.exists():
+            return False
+        blob.download_to_filename(tmp_path)
+        return True
     except Exception as e:
-        print(f"⚠️ Could not load facts from Firestore: {e}")
+        print("⚠️ Failed to download seen_facts.json from GCS:", e)
+        return False
+
+
+def _upload_seen_json_to_gcs(local_path):
+    """Upload a local JSON file to the configured GCS path. Returns True if ok."""
+    try:
+        client = storage.Client()
+        bucket_name, blob_path = _gcs_path_to_bucket_blob(_GCS_SEEN_PATH)
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(blob_path)
+        blob.upload_from_filename(local_path)
+        return True
+    except Exception as e:
+        print("⚠️ Failed to upload seen_facts.json to GCS:", e)
+        return False
+
+
+def load_seen_facts_from_sources(max_firestore_load: int = 1000):
+    """
+    Load seen facts into memory. Steps:
+      1) Try load JSON from GCS (preferred)
+      2) Backfill with up to `max_firestore_load` recent Firestore documents
+    """
+    global _checked_seen_source, _seen_facts
+    if _checked_seen_source:
+        return
+    _checked_seen_source = True
+
+    # 1) Try GCS JSON
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            tmp_file = os.path.join(td, "seen_facts.json")
+            ok = _download_seen_json_from_gcs(tmp_file)
+            if ok:
+                try:
+                    with open(tmp_file, "r", encoding="utf-8") as fh:
+                        data = json.load(fh)
+                        if isinstance(data, list):
+                            _seen_facts.update([f for f in data if isinstance(f, str)])
+                        else:
+                            print("⚠️ seen_facts.json content not a list - ignoring.")
+                    print(f"✅ Loaded {_seen_facts.__len__()} seen facts from GCS JSON.")
+                except Exception as e:
+                    print("⚠️ Failed to parse seen_facts.json from GCS:", e)
+            else:
+                print("ℹ️ No seen_facts.json in GCS (starting fresh).")
+    except Exception as e:
+        print("⚠️ Error while trying to load seen facts from GCS:", e)
+
+    # 2) Backfill from Firestore (recent)
+    try:
+        docs = db.collection(FACTS_COLLECTION) \
+                 .order_by("timestamp", direction=firestore.Query.DESCENDING) \
+                 .limit(max_firestore_load).stream()
+        added = 0
+        for d in docs:
+            try:
+                fact_text = d.get("fact")
+                if fact_text and isinstance(fact_text, str) and fact_text not in _seen_facts:
+                    _seen_facts.add(fact_text)
+                    added += 1
+            except Exception:
+                continue
+        if added:
+            print(f"✅ Backfilled {added} facts into memory from Firestore.")
+        else:
+            print("ℹ️ No new Firestore facts to backfill.")
+    except Exception as e:
+        print("⚠️ Could not backfill from Firestore:", e)
+
+
+def _persist_seen_facts_to_gcs():
+    """
+    Write current in-memory seen facts to a temporary JSON and upload to GCS.
+    Called whenever a new fact is saved.
+    """
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            tmp_file = os.path.join(td, "seen_facts.json")
+            with open(tmp_file, "w", encoding="utf-8") as fh:
+                # Store as a JSON list
+                json.dump(sorted(list(_seen_facts)), fh, ensure_ascii=False, indent=2)
+            ok = _upload_seen_json_to_gcs(tmp_file)
+            if ok:
+                print("✅ Updated seen_facts.json in GCS.")
+            else:
+                print("⚠️ Failed to upload updated seen_facts.json to GCS.")
+    except Exception as e:
+        print("⚠️ Error persisting seen_facts.json to GCS:", e)
 
 
 def save_fact_to_firestore(fact: str):
     """
-    Save a new fact to Firestore with normalized field and timestamp.
-    Also keep the in-memory caches in sync.
+    Save a new fact to Firestore with 'fact' and timestamp.
+    Also update the in-memory set and persist to GCS JSON.
     """
-    normalized = normalize_fact(fact)
     try:
         db.collection(FACTS_COLLECTION).add({
             "fact": fact,
-            "normalized": normalized,
             "timestamp": firestore.SERVER_TIMESTAMP
         })
-        _seen_facts.add(normalized)
-        # keep an example original text for semantic checks
-        _seen_map.setdefault(normalized, fact)
+        # Keep memory in sync
+        _seen_facts.add(fact)
+        # Persist the JSON
+        _persist_seen_facts_to_gcs()
     except Exception as e:
         print(f"⚠️ Could not save fact to Firestore: {e}")
 
 
-def is_duplicate_fact(fact: str, threshold: float = 0.88, top_k: int = 10) -> bool:
+def is_duplicate_fact(fact: str) -> bool:
     """
-    Detect duplicates or near-duplicates using:
-      1) exact normalized match
-      2) fuzzy similarity across cached normalized facts
-      3) semantic check via Gemini against top_k most similar candidates
-
-    IMPORTANT: This function only *checks* and DOES NOT save new facts.
-    The caller (e.g., get_unique_fact) should decide when to save.
+    Simple exact-string duplicate check using the in-memory seen set.
+    Loads sources on first call.
     """
-    load_seen_facts_from_firestore()
-    normalized = normalize_fact(fact)
-
-    # 1) exact normalized match
-    if normalized in _seen_facts:
-        return True
-
-    # 2) quick fuzzy similarity (cheap, local)
-    # gather the most similar existing normalized strings
-    scored = []
-    for existing in _seen_facts:
-        # quick filter: length ratio (skip extremely different lengths)
-        if not existing:
-            continue
-        score = SequenceMatcher(None, normalized, existing).ratio()
-        if score >= 0.75:  # candidate threshold for semantic check
-            scored.append((score, existing))
-    # If any are already highly similar (over threshold), mark duplicate
-    for score, _ in scored:
-        if score >= threshold:
-            return True
-
-    # If we have no good candidates from fuzzy, return False quickly
-    if not scored:
-        return False
-
-    # 3) Use Gemini to do a semantic/meaning check against the top_k candidates
-    # pick top_k highest-scoring candidates
-    scored.sort(reverse=True)
-    top_candidates = [cand for _, cand in scored[:top_k]]
-
-    # Build a concise prompt: ask the model to answer YES if the NEW fact
-    # is a duplicate/rephrasing of ANY of the numbered candidates.
-    # Keep the prompt short and explicit; expect a YES/NO reply.
-    candidate_texts = []
-    for i, n in enumerate(top_candidates, start=1):
-        candidate_texts.append(f"{i}. {_seen_map.get(n, n)}")
-    candidates_block = "\n".join(candidate_texts)
-
-    fact_clean = fact.strip()
-    prompt = (
-        "You are a strict duplicate-detection assistant. "
-        "Given a NEW trivia fact and a short numbered list of EXISTING facts, "
-        "answer ONLY with 'YES' if the NEW fact is the same or a close rewording of any existing fact, "
-        "otherwise answer ONLY with 'NO'. Do not add any explanation.\n\n"
-        f"NEW fact:\n{fact_clean}\n\n"
-        f"EXISTING facts:\n{candidates_block}\n\n"
-        "Answer YES or NO."
-    )
-
-    try:
-        model = GenerativeModel("gemini-2.5-flash")
-        response = model.generate_content(prompt)
-        text = (response.text or "").strip().lower()
-        if text.startswith("yes"):
-            return True
-        if text.startswith("no"):
-            return False
-        # fallback: if model didn't respond cleanly, be conservative and treat as not duplicate
-        return False
-    except Exception as e:
-        # if the LLM check fails, fall back to our fuzzy result (conservative choice: return False)
-        print(f"⚠️ Gemini semantic duplicate check failed: {e}")
-        return False
+    load_seen_facts_from_sources()
+    return fact in _seen_facts
 
 
 def get_unique_fact(max_attempts: int = 6):
     """
-    Generate or fetch a fact that passes duplicate checks.
-    Returns (fact_text, source_code). Caller must save the returned fact via save_fact_to_firestore().
+    Generate or fetch a fact that is not an exact duplicate of any seen fact.
+    Saves the fact when chosen.
     """
     recent = load_recent_facts()
     for _ in range(max_attempts):
         fact, source_code = get_dynamic_fact()
-        # pre-filter by normalized + recent list
-        if normalize_fact(fact) in _seen_facts:
+        # Exact-string checks only (no normalization / fuzzy)
+        if is_duplicate_fact(fact):
             continue
         if fact in recent:
             continue
-        # semantic + fuzzy duplicate check
-        if is_duplicate_fact(fact):
-            continue
-        # If passed checks, caller will save it
+        # Save and return
         save_fact_to_firestore(fact)
         return fact, source_code
 
-    # fallback: if we couldn't find a non-duplicate after attempts, return last generated (and save)
+    # If attempts exhausted: return last generated fact and save it anyway
     fact, source_code = get_dynamic_fact()
     save_fact_to_firestore(fact)
     return fact, source_code
 
+# -------------------------------
+# End of duplicate-prevention replacements
+# -------------------------------
 
-def load_recent_facts(limit=10):
-    try:
-        docs = db.collection(FACTS_COLLECTION) \
-            .order_by("timestamp", direction=firestore.Query.DESCENDING) \
-            .limit(limit).stream()
-        return [d.get("fact") for d in docs if d.get("fact")]
-    except Exception as e:
-        print("Error loading facts from Firestore:", str(e))
-        return []
-
-
-def get_dynamic_fact():
-    """Try the 4 sources in random order and return (fact_text, source_label).
-    If every source attempt fails, return the honey fallback with source 'Z'."""
-    sources = [1, 2, 3, 4]
-    random.shuffle(sources)
-    source_label_map = {1: "A", 2: "B", 3: "C", 4: "D"}
-
-    def gemini_fact(prompt):
-        model = GenerativeModel("gemini-2.5-flash")
-        response = model.generate_content(prompt)
-        return response.text.strip() if response and getattr(response, "text", None) else ""
-
-    # Try each source once in a random order
-    for source in sources:
-        label = source_label_map[source]
-        try:
-            if source == 1:
-                try:
-                    res = requests.get(
-                        "https://en.wikipedia.org/api/rest_v1/page/random/summary",
-                        timeout=10
-                    )
-                    if res.ok:
-                        data = res.json()
-                        title = data.get("title", "")
-                        extract = data.get("extract", "")
-                        wiki_text = f"{title}: {extract}"
-                        prompt = (
-                            "Rewrite the following Wikipedia summary into a 3-sentence trivia fact. "
-                            "Start with 'Did you know', then add 2 supporting sentences that give background or interesting details.\n\n"
-                            f"Summary: {wiki_text}"
-                        )
-                        fact = gemini_fact(prompt)
-                        if fact:
-                            return fact, label
-                except Exception:
-                    # try next source
-                    continue
-
-            elif source == 2:
-                prompt = (
-                    "Give one factual and engaging piece of technology trivia in 3 sentences. "
-                    "Sentence 1 must start with 'Did you know'. "
-                    "Sentences 2 and 3 should add interesting details or background."
-                )
-                fact = gemini_fact(prompt)
-                if fact:
-                    return fact, label
-
-            elif source == 3:
-                prompt = (
-                    "Give one true and engaging trivia, fact, or recent news about kdrama, kpop, or korean celebrities in 3 sentences. "
-                    "Start with 'Did you know', then add 2 supporting sentences with factual context or significance."
-                )
-                fact = gemini_fact(prompt)
-                if fact:
-                    return fact, label
-
-            elif source == 4:
-                prompt = (
-                    "Give one short, factual trivia about trending international media, movies, or celebrities in 3 sentences. "
-                    "The first must start with 'Did you know'. "
-                    "The next 2 sentences should give interesting supporting info or context."
-                )
-                fact = gemini_fact(prompt)
-                if fact:
-                    return fact, label
-
-        except Exception as e:
-            # don't raise — try the next source
-            print(f"get_dynamic_fact(): source {source} attempt failed: {e}")
-            continue
-
-    # If all sources failed, return honey fallback
-    honey = (
-        "Did you know honey never spoils? "
-        "Archaeologists have found edible honey in ancient Egyptian tombs over 3000 years old. "
-        "Its natural composition prevents bacteria from growing, keeping it preserved for millennia."
-    )
-    return honey, "Z"
 
 # -------------------------------
 # Gemini Helpers
