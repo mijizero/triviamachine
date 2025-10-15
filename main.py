@@ -200,7 +200,7 @@ def get_unique_fact(max_attempts: int = 6):
     """
     load_seen_facts_from_sources()  # Ensure seen facts are loaded
     for _ in range(max_attempts):
-        fact, source_code = get_dynamic_fact()
+        fact, source_code = get_fact_from_firestore()
         # Exact-string checks only (no normalization / fuzzy)
         if is_duplicate_fact(fact):
             continue
@@ -209,7 +209,7 @@ def get_unique_fact(max_attempts: int = 6):
         return fact, source_code
 
     # If attempts exhausted: return last generated fact and save it anyway
-    fact, source_code = get_dynamic_fact()
+    fact, source_code = get_fact_from_firestore()
     save_fact_to_firestore(fact)
     return fact, source_code
 
