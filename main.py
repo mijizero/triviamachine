@@ -221,7 +221,7 @@ def get_dynamic_fact():
                     "Give one factual and engaging piece of technology trivia in 3 sentences. "
                     "Sentence 1 must start with 'Did you know'. "
                     "Sentences 2 and 3 should add interesting details or background."
-                    "The fact should not have the same idea as any of the facts in the json file at" + json_firestore
+                    "The fact should not have the same idea as any of the facts in the json file at " + json_firestore
                 )
                 fact = gemini_fact(prompt)
                 if fact:
@@ -231,7 +231,7 @@ def get_dynamic_fact():
                 prompt = (
                     "Give one true and engaging trivia, fact, or recent news about kdrama, kpop, or korean celebrities in 3 sentences. "
                     "Start with 'Did you know', then add 2 supporting sentences with factual context or significance."
-                    "The fact should not have the same idea as any of the facts in the json file at" + json_firestore
+                    "The fact should not have the same idea as any of the facts in the json file at " + json_firestore
                 )
                 fact = gemini_fact(prompt)
                 if fact:
@@ -242,7 +242,7 @@ def get_dynamic_fact():
                     "Give one short, factual trivia about trending international media, movies, or celebrities in 3 sentences. "
                     "The first must start with 'Did you know'. "
                     "The next 2 sentences should give interesting supporting info or context."
-                    "The fact should not have the same idea as any of the facts in the json file at" + json_firestore
+                    "The fact should not have the same idea as any of the facts in the json file at " + json_firestore
                 )
                 fact = gemini_fact(prompt)
                 if fact:
@@ -752,6 +752,59 @@ def generate_endpoint():
         youtube_description = sanitize_for_youtube(fact, max_len=5000)
 
         # Upload to YouTube
+        video_id = upload_video_to_youtube_gcs(
+            video_gs_url,
+            youtube_title,
+            youtube_description,
+            category,
+            source_code
+        )
+
+        # === Trigger QQ pipeline internally ===
+        try:
+            qq_response = requests.post("http://localhost:8080/generate_qq")
+            if qq_response.ok:
+                qq_result = qq_response.json()
+            else:
+                qq_result = {"error": qq_response.text}
+        except Exception as qq_err:
+            qq_result = {"error": str(qq_err)}
+
+        # === Combined result ===
+        return jsonify({
+            "status": "ok",
+            "main": {
+                "fact": fact,
+                "video_gcs": video_https_url,
+                "youtube_video_id": video_id
+            },
+            "qq": qq_result
+        })
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route("/generate_qq", methods=["POST"])
+def generate_qq_endpoint():
+    """QQ Channel pipeline - called internally by /generate"""
+    try:
+        fact, source_code = get_unique_fact()
+        category = infer_category_from_fact(fact)
+
+        output_gcs_path = "gs://trivia-videos-output/output_QQ.mp4"
+        video_gs_url, video_https_url = create_trivia_video(fact, output_gcs_path)
+
+        title_options = [
+            "Quick Curiosity!", "Did You Notice?", "Mini Mind Bender!",
+            "The More You Know!", "Curious Corner!", "Brain Spark!",
+            "Whoa Moment!", "Fast Fact!", "Cool Knowledge!", "Trivia Rush!"
+        ]
+        youtube_title = sanitize_for_youtube(random.choice(title_options), max_len=100)
+        youtube_description = sanitize_for_youtube(fact, max_len=5000)
+
         video_id = upload_video_to_youtube_gcs(
             video_gs_url,
             youtube_title,
