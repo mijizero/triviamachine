@@ -728,7 +728,7 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
 def generate_endpoint():
     try:
         data = request.get_json(silent=True) or {}
-        # Use provided fact or generate a new unique one
+        # === Main pipeline ===
         fact_data = data.get("fact")
         if fact_data:
             fact = fact_data
@@ -760,64 +760,63 @@ def generate_endpoint():
             source_code
         )
 
-        # === Trigger QQ pipeline internally ===
+        main_result = {
+            "fact": fact,
+            "video_gcs": video_https_url,
+            "youtube_video_id": video_id
+        }
+
+        # === QQ pipeline ===
         try:
-            qq_response = requests.post("http://localhost:8080/generate_qq")
-            if qq_response.ok:
-                qq_result = qq_response.json()
+            data = request.get_json(silent=True) or {}
+            # === Main pipeline ===
+            fact_data = data.get("fact")
+            if fact_data:
+                fact = fact_data
+                source_code = data.get("source_code", "X")
             else:
-                qq_result = {"error": qq_response.text}
+                fact, source_code = get_unique_fact()
+            
+            category = data.get("category") or infer_category_from_fact(fact)    
+
+            # Output path in GCS
+            output_gcs_path = "gs://trivia-videos-output/output.mp4"
+            video_gs_url, video_https_url = create_trivia_video(fact, output_gcs_path)
+    
+            # Generate YouTube title and description
+            title_options = [
+                "Did you know?", "Trivia Time!", "Quick Fun Fact!", "Can You Guess This?",
+                "Learn Something!", "Well Who Knew?", "Wow Really?", "Fun Fact Alert!",
+                "Now You Know!", "Not Bad!", "Mind-Blowing Fact!"
+            ]
+            youtube_title = sanitize_for_youtube(random.choice(title_options), max_len=100)
+            youtube_description = sanitize_for_youtube(fact, max_len=5000)
+    
+            # Upload to YouTube
+            video_id = upload_video_to_youtube_gcs(
+                video_gs_url,
+                youtube_title,
+                youtube_description,
+                category,
+                source_code
+            )
+
+            qq_result = {
+                "fact": fact,
+                "video_gcs": video_https_url,
+                "youtube_video_id": video_id
+            }
+
         except Exception as qq_err:
+            import traceback
+            traceback.print_exc()
             qq_result = {"error": str(qq_err)}
 
         # === Combined result ===
         return jsonify({
             "status": "ok",
-            "main": {
-                "fact": fact,
-                "video_gcs": video_https_url,
-                "youtube_video_id": video_id
-            },
+            "main": main_result,
             "qq": qq_result
-        })
-
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-
-@app.route("/generate_qq", methods=["POST"])
-def generate_qq_endpoint():
-    """QQ Channel pipeline - called internally by /generate"""
-    try:
-        fact, source_code = get_unique_fact()
-        category = infer_category_from_fact(fact)
-
-        output_gcs_path = "gs://trivia-videos-output/output_QQ.mp4"
-        video_gs_url, video_https_url = create_trivia_video(fact, output_gcs_path)
-
-        title_options = [
-            "Quick Curiosity!", "Did You Notice?", "Mini Mind Bender!",
-            "The More You Know!", "Curious Corner!", "Brain Spark!",
-            "Whoa Moment!", "Fast Fact!", "Cool Knowledge!", "Trivia Rush!"
-        ]
-        youtube_title = sanitize_for_youtube(random.choice(title_options), max_len=100)
-        youtube_description = sanitize_for_youtube(fact, max_len=5000)
-
-        video_id = upload_video_to_youtube_gcs(
-            video_gs_url,
-            youtube_title,
-            youtube_description,
-            category,
-            source_code
-        )
-
-        return jsonify({
-            "status": "ok",
-            "fact": fact,
-            "video_gcs": video_https_url,
-            "youtube_video_id": video_id
         })
 
     except Exception as e:
