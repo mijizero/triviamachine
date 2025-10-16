@@ -72,10 +72,15 @@ def load_seen_facts_from_firestore():
 
 def save_fact_to_firestore(fact: str):
     """Save a new fact to Firestore with normalized field and timestamp,
-    then export the entire facts_history collection as JSON to GCS."""
+    then export the entire facts_history collection as JSON to GCS.
+
+    Notes:
+    - Upload path: gs://trivia-videos-output/facts_history.json (same folder as background/logo)
+    - This function removes the local temp file after upload.
+    """
     normalized = normalize_fact(fact)
     try:
-        # 1️⃣ Save fact to Firestore
+        # 1) Save fact to Firestore
         doc_ref = db.collection(FACTS_COLLECTION).add({
             "fact": fact,
             "normalized": normalized,
@@ -83,32 +88,46 @@ def save_fact_to_firestore(fact: str):
         })
         _seen_facts.add(normalized)
 
-        # 2️⃣ After saving, export all facts to JSON
+        # 2) Read the entire collection back
         all_facts = []
         docs = db.collection(FACTS_COLLECTION).stream()
         for d in docs:
-            data = d.to_dict()
-            if data:
-                data["id"] = d.id
-                all_facts.append(data)
+            # to_dict() gives the stored fields; include document id for traceability
+            data = d.to_dict() or {}
+            data["id"] = d.id
+            all_facts.append(data)
 
-        with tempfile.NamedTemporaryFile("w", delete=False, suffix=".json") as tmp_json:
+        # 3) Write JSON to a temporary local file (explicitly flush/close)
+        with tempfile.NamedTemporaryFile("w", delete=False, suffix=".json", encoding="utf-8") as tmp_json:
             json.dump(all_facts, tmp_json, indent=2, ensure_ascii=False)
             tmp_json_path = tmp_json.name
 
-        # 3️⃣ Upload to same GCS path as logo/background
+        # 4) Upload JSON to the bucket (same bucket as your background/logo)
         bucket_name = "trivia-videos-output"
-        json_blob_path = "facts_history.json"
+        json_blob_path = "facts_history.json"  # root of bucket, same area as background/logo
         client = storage.Client()
         bucket = client.bucket(bucket_name)
         blob = bucket.blob(json_blob_path)
-        blob.upload_from_filename(tmp_json_path)
-        print(f"✅ Exported Firestore facts to gs://{bucket_name}/{json_blob_path}")
 
-        os.remove(tmp_json_path)
+        # Ensure correct content type and overwrite if exists
+        blob.upload_from_filename(tmp_json_path, content_type="application/json")
+
+        # Optional: make public so you can immediately see it in a browser (uncomment if desired)
+        # blob.make_public()
+
+        https_url = f"https://storage.googleapis.com/{bucket_name}/{json_blob_path}"
+        print(f"✅ Exported Firestore facts to gs://{bucket_name}/{json_blob_path} ({https_url})")
+
+        # 5) Remove local temp file (keeps VM clean)
+        try:
+            os.remove(tmp_json_path)
+        except Exception as e_rm:
+            print(f"⚠️ Could not remove local temp JSON file {tmp_json_path}: {e_rm}")
 
     except Exception as e:
-        print(f"⚠️ Could not save/export fact: {e}")
+        import traceback
+        traceback.print_exc()
+        print(f"⚠️ Could not save/export fact to Firestore/GCS: {e}")
 
 
 def is_duplicate_fact(fact: str, threshold: float = 0.88) -> bool:
