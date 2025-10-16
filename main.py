@@ -71,58 +71,58 @@ def load_seen_facts_from_firestore():
 
 
 def save_fact_to_firestore(fact: str):
-    """Save a new fact to Firestore with normalized field and timestamp,
-    then export the entire facts_history collection as JSON to GCS.
-
-    Notes:
-    - Upload path: gs://trivia-videos-output/facts_history.json (same folder as background/logo)
-    - This function removes the local temp file after upload.
+    """Save a new fact to Firestore and export the collection to GCS JSON.
+    Fixes DatetimeWithNanoseconds serialization.
     """
+    from google.cloud import firestore
+    import datetime, json, tempfile, os
+    from google.cloud import storage
+
     normalized = normalize_fact(fact)
     try:
-        # 1) Save fact to Firestore
-        doc_ref = db.collection(FACTS_COLLECTION).add({
+        # --- 1. Save to Firestore ---
+        db.collection(FACTS_COLLECTION).add({
             "fact": fact,
             "normalized": normalized,
             "timestamp": firestore.SERVER_TIMESTAMP
         })
         _seen_facts.add(normalized)
 
-        # 2) Read the entire collection back
+        # --- 2. Gather all facts ---
         all_facts = []
         docs = db.collection(FACTS_COLLECTION).stream()
         for d in docs:
-            # to_dict() gives the stored fields; include document id for traceability
             data = d.to_dict() or {}
             data["id"] = d.id
             all_facts.append(data)
 
-        # 3) Write JSON to a temporary local file (explicitly flush/close)
+        # --- 3. Convert non-serializable types (timestamps, etc.) ---
+        def default_converter(o):
+            if isinstance(o, datetime.datetime):
+                return o.isoformat()
+            return str(o)
+
+        # --- 4. Write temp JSON ---
         with tempfile.NamedTemporaryFile("w", delete=False, suffix=".json", encoding="utf-8") as tmp_json:
-            json.dump(all_facts, tmp_json, indent=2, ensure_ascii=False)
+            json.dump(all_facts, tmp_json, indent=2, ensure_ascii=False, default=default_converter)
             tmp_json_path = tmp_json.name
 
-        # 4) Upload JSON to the bucket (same bucket as your background/logo)
+        # --- 5. Upload to GCS ---
         bucket_name = "trivia-videos-output"
-        json_blob_path = "facts_history.json"  # root of bucket, same area as background/logo
+        json_blob_path = "facts_history.json"
         client = storage.Client()
         bucket = client.bucket(bucket_name)
         blob = bucket.blob(json_blob_path)
-
-        # Ensure correct content type and overwrite if exists
         blob.upload_from_filename(tmp_json_path, content_type="application/json")
 
-        # Optional: make public so you can immediately see it in a browser (uncomment if desired)
-        # blob.make_public()
-
         https_url = f"https://storage.googleapis.com/{bucket_name}/{json_blob_path}"
-        print(f"✅ Exported Firestore facts to gs://{bucket_name}/{json_blob_path} ({https_url})")
+        print(f"✅ Exported Firestore facts to {https_url}")
 
-        # 5) Remove local temp file (keeps VM clean)
+        # --- 6. Clean local temp ---
         try:
             os.remove(tmp_json_path)
         except Exception as e_rm:
-            print(f"⚠️ Could not remove local temp JSON file {tmp_json_path}: {e_rm}")
+            print(f"⚠️ Could not remove local temp JSON: {e_rm}")
 
     except Exception as e:
         import traceback
