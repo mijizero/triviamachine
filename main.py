@@ -71,17 +71,44 @@ def load_seen_facts_from_firestore():
 
 
 def save_fact_to_firestore(fact: str):
-    """Save a new fact to Firestore with normalized field and timestamp."""
+    """Save a new fact to Firestore with normalized field and timestamp,
+    then export the entire facts_history collection as JSON to GCS."""
     normalized = normalize_fact(fact)
     try:
-        db.collection(FACTS_COLLECTION).add({
+        # 1️⃣ Save fact to Firestore
+        doc_ref = db.collection(FACTS_COLLECTION).add({
             "fact": fact,
             "normalized": normalized,
             "timestamp": firestore.SERVER_TIMESTAMP
         })
-        _seen_facts.add(normalized)  # Optional: keep memory in sync
+        _seen_facts.add(normalized)
+
+        # 2️⃣ After saving, export all facts to JSON
+        all_facts = []
+        docs = db.collection(FACTS_COLLECTION).stream()
+        for d in docs:
+            data = d.to_dict()
+            if data:
+                data["id"] = d.id
+                all_facts.append(data)
+
+        with tempfile.NamedTemporaryFile("w", delete=False, suffix=".json") as tmp_json:
+            json.dump(all_facts, tmp_json, indent=2, ensure_ascii=False)
+            tmp_json_path = tmp_json.name
+
+        # 3️⃣ Upload to same GCS path as logo/background
+        bucket_name = "trivia-videos-output"
+        json_blob_path = "facts_history.json"
+        client = storage.Client()
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(json_blob_path)
+        blob.upload_from_filename(tmp_json_path)
+        print(f"✅ Exported Firestore facts to gs://{bucket_name}/{json_blob_path}")
+
+        os.remove(tmp_json_path)
+
     except Exception as e:
-        print(f"⚠️ Could not save fact to Firestore: {e}")
+        print(f"⚠️ Could not save/export fact: {e}")
 
 
 def is_duplicate_fact(fact: str, threshold: float = 0.88) -> bool:
