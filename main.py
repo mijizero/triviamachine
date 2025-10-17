@@ -221,7 +221,7 @@ def get_dynamic_fact():
                     "Give one factual and engaging piece of technology trivia in 3 sentences. "
                     "Sentence 1 must start with 'Did you know'. "
                     "Sentences 2 and 3 should add interesting details or background."
-                    "The fact should not have the same idea as any of the facts in the json file at " + json_firestore
+                    "The fact should not be the same concept or main idea as any of the facts in the json file at " + json_firestore
                 )
                 fact = gemini_fact(prompt)
                 if fact:
@@ -231,7 +231,7 @@ def get_dynamic_fact():
                 prompt = (
                     "Give one true and engaging trivia, fact, or recent news about kdrama, kpop, or korean celebrities in 3 sentences. "
                     "Start with 'Did you know', then add 2 supporting sentences with factual context or significance."
-                    "The fact should not have the same idea as any of the facts in the json file at " + json_firestore
+                    "The fact should not be the same concept or main idea as any of the facts in the json file at " + json_firestore
                 )
                 fact = gemini_fact(prompt)
                 if fact:
@@ -242,7 +242,7 @@ def get_dynamic_fact():
                     "Give one short, factual trivia about trending international media, movies, or celebrities in 3 sentences. "
                     "The first must start with 'Did you know'. "
                     "The next 2 sentences should give interesting supporting info or context."
-                    "The fact should not have the same idea as any of the facts in the json file at " + json_firestore
+                    "The fact should not be the same concept or main idea as any of the facts in the json file at " + json_firestore
                 )
                 fact = gemini_fact(prompt)
                 if fact:
