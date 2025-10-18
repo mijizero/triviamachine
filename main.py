@@ -237,7 +237,7 @@ def get_dynamic_fact_JINJA():
     If every source attempt fails, return the honey fallback with source 'Z'."""
     sources = [3, 4]
     random.shuffle(sources)
-    source_label_map = {3: "C", 4: "D"}
+    source_label_map = {1: "A", 2: "B", 3: "C"}
     json_firestore = "https://storage.googleapis.com/trivia-videos-output/facts_history.json"
 
     def gemini_fact(prompt):
@@ -252,7 +252,7 @@ def get_dynamic_fact_JINJA():
 
             if source == 1:
                 prompt = (
-                    "Give one factual and engaging piece of technology trivia in 3 sentences. "
+                    "Give one factual and engaging piece of korean drama trivia or latest news on actors/dramas in 3 sentences. "
                     "Sentence 1 must start with 'Did you know'. "
                     "Sentences 2 and 3 should add interesting details or background."
                     "The fact should not be the same concept or main idea as any of the facts in the json file at " + json_firestore
@@ -263,7 +263,7 @@ def get_dynamic_fact_JINJA():
 
             elif source == 2:
                 prompt = (
-                    "Give one short, factual explanation on how some piece of technology or everyday product works in 3 sentences. "
+                    "Give one short, factual and engaging latest news or trivia about kpop idols or groups in 3 sentences. "
                     "The first must start with 'Did you know'. "
                     "The next 2 sentences should give interesting supporting info or context."
                     "The fact should not be the same concept or main idea as any of the entries in the json file at " + json_firestore
