@@ -101,7 +101,7 @@ def create_trivia_video():
     # --- Split fact into 2-line pages ---
     from PIL import Image, ImageDraw, ImageFont
     tmp_dir = tempfile.gettempdir()
-    font = ImageFont.truetype("DejaVu-Sans-Bold.ttf", 55)
+    font = ImageFont.truetype("Roboto-Regular.ttf", 55)
 
     lines = fact.replace("*","").split("\n")
     pages = ["\n".join(lines[i:i+2]) for i in range(0, len(lines), 2)]
