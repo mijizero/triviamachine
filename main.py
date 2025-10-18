@@ -177,7 +177,7 @@ def get_unique_fact():
     return fact, source_code
 
 def get_dynamic_fact():
-    """Try the 4 sources in random order and return (fact_text, source_label).
+    """Try the 2 sources in random order and return (fact_text, source_label).
     If every source attempt fails, return the honey fallback with source 'Z'."""
     sources = [1, 2]
     random.shuffle(sources)
@@ -230,11 +230,11 @@ def get_dynamic_fact():
     return honey, "Z"
 
 def get_dynamic_fact_JINJA():
-    """Try the 4 sources in random order and return (fact_text, source_label).
+    """Try the 2 sources in random order and return (fact_text, source_label).
     If every source attempt fails, return the honey fallback with source 'Z'."""
-    sources = [1, 2]
+    sources = [3, 4]
     random.shuffle(sources)
-    source_label_map = {1: "A", 2: "B"}
+    source_label_map = {3: "C", 4: "D"}
     json_firestore = "https://storage.googleapis.com/trivia-videos-output/facts_history.json"
 
     def gemini_fact(prompt):
