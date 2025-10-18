@@ -167,16 +167,27 @@ def load_recent_facts(limit=10):
 def get_unique_fact(ytdest):
     recent = load_recent_facts()
     for _ in range(5):
-        fact, source_code = get_dynamic_fact()
+        # choose generator based on destination
+        if ytdest == 'kk':
+            fact, source_code = get_dynamic_fact_JINJA()
+        else:
+            fact, source_code = get_dynamic_fact()
+
         if not is_duplicate_fact(fact) and fact not in recent:
-            save_fact_to_firestore(fact)  # <--- Use this only
+            save_fact_to_firestore(fact)
+            print(f"get_unique_fact: selected fact for {ytdest} from source {source_code}")
             return fact, source_code
-    # fallback if all failed
+
+    # fallback if all attempts failed
     if ytdest == 'tech':
         fact, source_code = get_dynamic_fact()
-    elif ytdest =='kk':
+    elif ytdest == 'kk':
         fact, source_code = get_dynamic_fact_JINJA()
+    else:
+        fact, source_code = get_dynamic_fact()
+
     save_fact_to_firestore(fact)
+    print(f"get_unique_fact: fallback fact for {ytdest} from source {source_code}")
     return fact, source_code
 
 def get_dynamic_fact():
@@ -336,8 +347,8 @@ def synthesize_speech(text, output_path, ytdest):
         )
     elif ytdest == "kk":
         voice = texttospeech.VoiceSelectionParams(
-            language_code="en-GB",
-            name="en-GB-Neural2-A",
+            language_code="en-US",
+            name="en-US-Neural2-F",
             ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
         )
     else:
