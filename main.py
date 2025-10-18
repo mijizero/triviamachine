@@ -352,6 +352,16 @@ def get_youtube_creds_from_secret():
     creds_json = response.payload.data.decode("UTF-8")
     return Credentials.from_authorized_user_info(json.loads(creds_json))
 
+def get_youtube_creds_from_secret_JINJA():
+    client = secretmanager.SecretManagerServiceClient()
+    secret_name = "Credentials_Jinja"
+    project_id = "trivia-machine-472207"
+    response = client.access_secret_version(
+        name=f"projects/{project_id}/secrets/{secret_name}/versions/latest"
+    )
+    creds_json = response.payload.data.decode("UTF-8")
+    return Credentials.from_authorized_user_info(json.loads(creds_json))
+
 def infer_category_from_fact(fact_text):
     keywords_map = {
         "pop culture": ["movie","film","tv","celebrity","music","show","trend","actor","actress","entertainment"],
@@ -384,13 +394,16 @@ def sanitize_for_youtube(text, max_len=100):
         text = text[:max_len].rsplit(" ",1)[0]
     return text
 
-def upload_video_to_youtube_gcs(gcs_path, title, description, category, source_code, tags=None, privacy="public"):
+def upload_video_to_youtube_gcs(gcs_path, title, description, category, source_code, ytdest tags=None, privacy="public"):
     try:
         if not gcs_path.startswith("gs://"):
             raise ValueError(f"Invalid GCS path: {gcs_path}")
 
         bucket_name, blob_name = gcs_path[5:].split("/",1)
-        creds = get_youtube_creds_from_secret()
+        if
+            creds = get_youtube_creds_from_secret()
+        elif
+            creds = get_youtube_creds_from_secret_JINJA()    
         youtube = build("youtube","v3",credentials=creds)
 
         # Download video locally
@@ -763,7 +776,7 @@ def generate_endpoint():
         category = data.get("category") or infer_category_from_fact(fact)
 
         # Output path in GCS
-        output_gcs_path = "gs://trivia-videos-output/output.mp4"
+        output_gcs_path = "gs://trivia-videos-output/output_tech.mp4"
         video_gs_url, video_https_url = create_trivia_video(fact, output_gcs_path)
 
         # Generate YouTube title and description
@@ -781,7 +794,8 @@ def generate_endpoint():
             youtube_title,
             youtube_description,
             category,
-            source_code
+            source_code,
+            'tech'
         )
 
         main_result = {
@@ -804,7 +818,7 @@ def generate_endpoint():
             category = data.get("category") or infer_category_from_fact(fact)    
 
             # Output path in GCS
-            output_gcs_path = "gs://trivia-videos-output/output.mp4"
+            output_gcs_path = "gs://trivia-videos-output/output_kk.mp4"
             video_gs_url, video_https_url = create_trivia_video(fact, output_gcs_path)
     
             # Generate YouTube title and description
@@ -822,7 +836,8 @@ def generate_endpoint():
                 youtube_title,
                 youtube_description,
                 category,
-                source_code
+                source_code,
+                'kk'
             )
 
             qq_result = {
