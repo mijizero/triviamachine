@@ -461,7 +461,7 @@ def is_similar(a, b, threshold=0.8):
     """Returns True if two strings are semantically similar."""
     return SequenceMatcher(None, a.lower(), b.lower()).ratio() > threshold
 
-def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/output.mp4"):
+def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/output.mp4", ytdest):
     with tempfile.TemporaryDirectory() as tmpdir:
         fact_text = fact_text.replace("*", "").strip()
         search_query = extract_search_query(fact_text)
@@ -651,8 +651,12 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
         # --- Prepare logo once (hardcoded GCS path) ---
         logo_resized = None
         try:
-            logo_url = "https://storage.googleapis.com/trivia-videos-output/trivia_logo.png"
-            logo_path = os.path.join(tmpdir, "trivia_logo.png")
+            if ytdest == "tech":
+                logo_url = "https://storage.googleapis.com/trivia-videos-output/trivia_logo.png"
+                logo_path = os.path.join(tmpdir, "trivia_logo.png")
+            elif ytdest == "kk":
+                logo_url = "https://storage.googleapis.com/trivia-videos-output/trivia_logo_jinja.png"
+                logo_path = os.path.join(tmpdir, "trivia_logo_jinja.png")
             r = requests.get(logo_url, timeout=10)
             if r.ok:
                 with open(logo_path, "wb") as lf:
@@ -777,7 +781,7 @@ def generate_endpoint():
 
         # Output path in GCS
         output_gcs_path = "gs://trivia-videos-output/output_tech.mp4"
-        video_gs_url, video_https_url = create_trivia_video(fact, output_gcs_path)
+        video_gs_url, video_https_url = create_trivia_video(fact, output_gcs_path,"tech")
 
         # Generate YouTube title and description
         title_options = [
@@ -819,7 +823,7 @@ def generate_endpoint():
 
             # Output path in GCS
             output_gcs_path = "gs://trivia-videos-output/output_kk.mp4"
-            video_gs_url, video_https_url = create_trivia_video(fact, output_gcs_path)
+            video_gs_url, video_https_url = create_trivia_video(fact, output_gcs_path,"kk")
     
             # Generate YouTube title and description
             title_options = [
