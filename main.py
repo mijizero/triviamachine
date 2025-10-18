@@ -6,6 +6,7 @@ from flask import Flask, jsonify
 from moviepy.editor import VideoFileClip, AudioFileClip, TextClip, CompositeVideoClip, ImageClip
 from google.cloud import texttospeech, storage
 from pydub import AudioSegment
+from PIL import Image, ImageDraw, ImageFont
 
 app = Flask(__name__)
 
@@ -34,6 +35,7 @@ def synthesize_speech(text, output_path):
     response = client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
     with open(output_path, "wb") as out:
         out.write(response.audio_content)
+    
     # Convert MP3 to WAV for MoviePy
     wav_path = output_path.replace(".mp3", ".wav")
     AudioSegment.from_mp3(output_path).export(wav_path, format="wav")
@@ -99,15 +101,16 @@ def create_trivia_video():
     audio_duration = audio_clip.duration
 
     # --- Split fact into 2-line pages ---
-    from PIL import Image, ImageDraw, ImageFont
     tmp_dir = tempfile.gettempdir()
-    font = ImageFont.truetype("Roboto-Regular.ttf", 55)
+    font_path = "Roboto-Regular.ttf"
+    font = ImageFont.truetype(font_path, 55)
 
     lines = fact.replace("*","").split("\n")
     pages = ["\n".join(lines[i:i+2]) for i in range(0, len(lines), 2)]
 
-    # --- Create images for each page ---
+    # --- Create images for each page with start times ---
     clips = []
+    page_duration = audio_duration / len(pages)
     for i, page_text in enumerate(pages):
         img = Image.new("RGB", (1080, 1920), color=(0,0,0))
         draw = ImageDraw.Draw(img)
@@ -115,10 +118,21 @@ def create_trivia_video():
         text_w, text_h = bbox[2]-bbox[0], bbox[3]-bbox[1]
         text_x = (1080 - text_w)/2
         text_y = (1920 - text_h)/2
-        draw.multiline_text((text_x, text_y), page_text, font=font, fill="white", stroke_width=2, stroke_fill="black", spacing=15, align="center")
+        draw.multiline_text(
+            (text_x, text_y),
+            page_text,
+            font=font,
+            fill="white",
+            stroke_width=2,
+            stroke_fill="black",
+            spacing=15,
+            align="center"
+        )
         img_path = os.path.join(tmp_dir, f"page_{i}.png")
         img.save(img_path)
-        clips.append(ImageClip(img_path).set_duration(audio_duration/len(pages)))
+
+        clip = ImageClip(img_path).set_duration(page_duration).set_start(i*page_duration)
+        clips.append(clip)
 
     # --- Composite with background video ---
     composite = CompositeVideoClip([bg_clip, *clips])
