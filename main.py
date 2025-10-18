@@ -486,7 +486,7 @@ def is_similar(a, b, threshold=0.8):
     """Returns True if two strings are semantically similar."""
     return SequenceMatcher(None, a.lower(), b.lower()).ratio() > threshold
 
-def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/output.mp4", ytdest):
+def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-output/output.mp4"):
     with tempfile.TemporaryDirectory() as tmpdir:
         fact_text = fact_text.replace("*", "").strip()
         search_query = extract_search_query(fact_text)
