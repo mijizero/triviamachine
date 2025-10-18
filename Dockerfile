@@ -45,6 +45,19 @@ RUN pip install setuptools==58.0.4 numpy==1.23.0
 # 🩵 Install Aeneas after numpy and distutils are ready
 RUN pip install aeneas==1.7.3.0
 
+# Fix ImageMagick policy restrictions
+RUN sed -i 's/rights="none" pattern="PDF"/rights="read|write" pattern="PDF"/' /etc/ImageMagick-6/policy.xml && \
+    sed -i 's/rights="none" pattern="PS"/rights="read|write" pattern="PS"/' /etc/ImageMagick-6/policy.xml && \
+    sed -i 's/rights="none" pattern="EPI"/rights="read|write" pattern="EPI"/' /etc/ImageMagick-6/policy.xml && \
+    sed -i 's/rights="none" pattern="XPS"/rights="read|write" pattern="XPS"/' /etc/ImageMagick-6/policy.xml && \
+    sed -i 's/rights="none" pattern="TEXT"/rights="read|write" pattern="TEXT"/' /etc/ImageMagick-6/policy.xml && \
+    sed -i 's/rights="none" pattern="LABEL"/rights="read|write" pattern="LABEL"/' /etc/ImageMagick-6/policy.xml && \
+    sed -i 's/rights="none" pattern="caption"/rights="read|write" pattern="caption"/' /etc/ImageMagick-6/policy.xml && \
+    sed -i 's/rights="none" pattern="@.*"/rights="read|write" pattern="@.*"/' /etc/ImageMagick-6/policy.xml
+
+# Set environment variables for ImageMagick
+ENV IMAGE_MAGICK_BINARY=/usr/bin/convert
+
 # Set working directory
 WORKDIR /app
 
