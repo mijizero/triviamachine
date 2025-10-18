@@ -172,9 +172,9 @@ def get_unique_fact(ytdest):
             save_fact_to_firestore(fact)  # <--- Use this only
             return fact, source_code
     # fallback if all failed
-    if ytdest == 'tech'
+    if ytdest == 'tech':
         fact, source_code = get_dynamic_fact()
-    elif ytdest =='kk'
+    elif ytdest =='kk':
         fact, source_code = get_dynamic_fact_JINJA()
     save_fact_to_firestore(fact)
     return fact, source_code
@@ -400,9 +400,9 @@ def upload_video_to_youtube_gcs(gcs_path, title, description, category, source_c
             raise ValueError(f"Invalid GCS path: {gcs_path}")
 
         bucket_name, blob_name = gcs_path[5:].split("/",1)
-        if
+        if ytdest == 'tech':
             creds = get_youtube_creds_from_secret()
-        elif
+        elif ytdest == 'kk':
             creds = get_youtube_creds_from_secret_JINJA()    
         youtube = build("youtube","v3",credentials=creds)
 
