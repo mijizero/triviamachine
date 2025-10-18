@@ -806,7 +806,7 @@ def generate_endpoint():
 
         # Output path in GCS
         output_gcs_path = "gs://trivia-videos-output/output_tech.mp4"
-        video_gs_url, video_https_url = create_trivia_video(fact, output_gcs_path,"tech")
+        video_gs_url, video_https_url = create_trivia_video(fact, "tech", output_gcs_path)
 
         # Generate YouTube title and description
         title_options = [
@@ -848,7 +848,7 @@ def generate_endpoint():
 
             # Output path in GCS
             output_gcs_path = "gs://trivia-videos-output/output_kk.mp4"
-            video_gs_url, video_https_url = create_trivia_video(fact, output_gcs_path,"kk")
+            video_gs_url, video_https_url = create_trivia_video(fact, "kk", output_gcs_path)
     
             # Generate YouTube title and description
             title_options = [
