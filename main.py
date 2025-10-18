@@ -40,15 +40,16 @@ def synthesize_speech(text, output_path):
 
 
 # -------------------------------
-# Helper: Get valid random video
+# Helper: Get random background video (Pexels direct MP4s)
 # -------------------------------
 def get_random_video():
-    # Sample Pexels / Vimeo direct MP4 links (stable test sources)
+    # ✅ Real, direct MP4 files from Pexels CDN (no redirects, stable)
     sample_videos = [
-        "https://player.vimeo.com/external/416150494.sd.mp4?s=0e86dfb21e8c0e7c6f029d1c27cbf4c1e0584e4f&profile_id=164",
-        "https://player.vimeo.com/external/459378313.sd.mp4?s=28fca8ef8e1e086693a60a3f5cbb0dbb7a82b77f&profile_id=164",
-        "https://player.vimeo.com/external/376818701.sd.mp4?s=9dbf6df7d38e2854e54e4cf91520b486bdebe3a7&profile_id=164",
-        "https://player.vimeo.com/external/209184812.sd.mp4?s=ba91b6fa19a7a7c7d44b6c8d0975f75bfcdfad87&profile_id=164"
+        "https://videos.pexels.com/video-files/856331/856331-hd_1920_1080_24fps.mp4",
+        "https://videos.pexels.com/video-files/857195/857195-hd_1920_1080_24fps.mp4",
+        "https://videos.pexels.com/video-files/855427/855427-hd_1920_1080_24fps.mp4",
+        "https://videos.pexels.com/video-files/1526909/1526909-hd_1920_1080_24fps.mp4",
+        "https://videos.pexels.com/video-files/1307711/1307711-hd_1920_1080_24fps.mp4"
     ]
 
     random.shuffle(sample_videos)
@@ -57,7 +58,7 @@ def get_random_video():
     for url in sample_videos:
         print(f"Trying background: {url}")
         try:
-            r = requests.get(url, stream=True, timeout=10)
+            r = requests.get(url, stream=True, timeout=15)
             content_type = r.headers.get("Content-Type", "")
             if "video" not in content_type.lower():
                 print("⚠️ Not a valid video:", content_type)
@@ -68,12 +69,11 @@ def get_random_video():
                     if chunk:
                         f.write(chunk)
 
-            # verify file size > 100KB
             if os.path.getsize(video_path) > 100_000:
                 print("✅ Video downloaded successfully:", video_path)
                 return video_path
             else:
-                print("⚠️ File too small, trying another video...")
+                print("⚠️ File too small, trying another...")
         except Exception as e:
             print("⚠️ Error downloading video:", e)
 
@@ -97,7 +97,7 @@ def create_trivia_video():
 
     # 1. Download background video
     bg_video_path = get_random_video()
-    bg_clip = VideoFileClip(bg_video_path).subclip(0, 20)
+    bg_clip = VideoFileClip(bg_video_path).subclip(0, 20)  # 20 sec limit
 
     # 2. Generate TTS audio
     audio_path = os.path.join(tempfile.gettempdir(), "speech.mp3")
