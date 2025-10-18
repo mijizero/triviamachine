@@ -322,25 +322,45 @@ def upload_to_gcs(local_path, gcs_path):
     return gs_url, https_url
 
 def synthesize_speech(text, output_path, ytdest):
+    from google.cloud import texttospeech
+
     client = texttospeech.TextToSpeechClient()
     synthesis_input = texttospeech.SynthesisInput(text=text)
-    voice = texttospeech.VoiceSelectionParams(
-        if ytdest == "tech":
+
+    # Pick voice depending on destination
+    if ytdest == "tech":
+        voice = texttospeech.VoiceSelectionParams(
             language_code="en-AU",
             name="en-AU-Neural2-D",
             ssml_gender=texttospeech.SsmlVoiceGender.MALE
-        elif ytdest == "kk":
+        )
+    elif ytdest == "kk":
+        voice = texttospeech.VoiceSelectionParams(
             language_code="en-AU",
             name="en-AU-Neural2-A",
             ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
-    )
+        )
+    else:
+        # fallback voice
+        voice = texttospeech.VoiceSelectionParams(
+            language_code="en-US",
+            name="en-US-Neural2-F",
+            ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
+        )
+
     audio_config = texttospeech.AudioConfig(
         audio_encoding=texttospeech.AudioEncoding.MP3,
         speaking_rate=0.9,
         pitch=-3,
         volume_gain_db=2.0
     )
-    response = client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
+
+    response = client.synthesize_speech(
+        input=synthesis_input,
+        voice=voice,
+        audio_config=audio_config
+    )
+
     with open(output_path, "wb") as out:
         out.write(response.audio_content)
 
