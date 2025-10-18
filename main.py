@@ -5,7 +5,7 @@ import requests
 from flask import Flask, jsonify
 from moviepy.editor import VideoFileClip, AudioFileClip
 from moviepy.video.tools.drawing import color_gradient
-from moviepy.video.VideoClip import TextClip, CompositeVideoClip
+from moviepy.editor import TextClip, CompositeVideoClip
 from google.cloud import texttospeech, storage
 
 app = Flask(__name__)
