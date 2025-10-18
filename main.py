@@ -235,9 +235,9 @@ def get_dynamic_fact():
 def get_dynamic_fact_JINJA():
     """Try the 2 sources in random order and return (fact_text, source_label).
     If every source attempt fails, return the honey fallback with source 'Z'."""
-    sources = [3, 4]
+    sources = [1, 2]
     random.shuffle(sources)
-    source_label_map = {1: "A", 2: "B", 3: "C"}
+    source_label_map = {1: "A", 2: "B"}
     json_firestore = "https://storage.googleapis.com/trivia-videos-output/facts_history.json"
 
     def gemini_fact(prompt):
@@ -336,8 +336,8 @@ def synthesize_speech(text, output_path, ytdest):
         )
     elif ytdest == "kk":
         voice = texttospeech.VoiceSelectionParams(
-            language_code="en-AU",
-            name="en-AU-Neural2-A",
+            language_code="en-GB",
+            name="en-GB-Neural2-A",
             ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
         )
     else:
