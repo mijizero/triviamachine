@@ -3,12 +3,15 @@ import random
 import tempfile
 import requests
 from flask import Flask, jsonify
-from moviepy.editor import VideoFileClip, AudioFileClip
-from moviepy.video.tools.drawing import color_gradient
-from moviepy.editor import TextClip, CompositeVideoClip
+from moviepy.editor import VideoFileClip, AudioFileClip, TextClip, CompositeVideoClip
 from google.cloud import texttospeech, storage
 
 app = Flask(__name__)
+
+# -------------------------------
+# Pexels API Key - replace with your real key
+# -------------------------------
+PEXELS_API_KEY = "zXJ9dAVT3F0TLcEqMkGXtE5H8uePbhEvuq0kBnWnbq8McMpIKTQeWnDQ"
 
 # -------------------------------
 # Helper: Generate speech
@@ -16,55 +19,45 @@ app = Flask(__name__)
 def synthesize_speech(text, output_path):
     client = texttospeech.TextToSpeechClient()
     synthesis_input = texttospeech.SynthesisInput(text=text)
-
     voice = texttospeech.VoiceSelectionParams(
         language_code="en-AU",
         name="en-AU-Neural2-A",
         ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
     )
-
     audio_config = texttospeech.AudioConfig(
         audio_encoding=texttospeech.AudioEncoding.MP3,
         speaking_rate=0.95,
         pitch=-1.0,
         volume_gain_db=1.5
     )
-
-    response = client.synthesize_speech(
-        input=synthesis_input,
-        voice=voice,
-        audio_config=audio_config
-    )
-
+    response = client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
     with open(output_path, "wb") as out:
         out.write(response.audio_content)
     return output_path
 
-
 # -------------------------------
-# Helper: Download random video
+# Helper: Download random video from Pexels
 # -------------------------------
-def get_random_video():
-    sample_videos = [
-        "https://cdn.pixabay.com/vimeo/2987/forest-36802.mp4?width=640&hash=2c1b7efc7b8a6c3f5a9f3b6c38a8bb5b8c7b1e5f",
-        "https://cdn.pixabay.com/vimeo/4519/waterfall-22497.mp4?width=640&hash=9b59dfd33f7c776cdb31e5c32c1f7dbf4235b42e",
-        "https://cdn.pixabay.com/vimeo/2568/sky-11570.mp4?width=640&hash=7ef12db29f8358b0f414d9a6d4c6218f4bda74e3"
-    ]
-    for url in random.sample(sample_videos, len(sample_videos)):
-        print(f"Trying background: {url}")
-        r = requests.get(url, stream=True)
-        content_type = r.headers.get("Content-Type", "")
-        if "video" in content_type:
-            video_path = os.path.join(tempfile.gettempdir(), "background.mp4")
-            with open(video_path, "wb") as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-            return video_path
-        else:
-            print(f"⚠️ Not a valid video: {content_type}")
-    raise RuntimeError("No valid background video found.")
-
+def get_random_video(query="nature"):
+    headers = {"Authorization": PEXELS_API_KEY}
+    url = f"https://api.pexels.com/videos/search?query={query}&per_page=10"
+    r = requests.get(url, headers=headers, timeout=10)
+    r.raise_for_status()
+    videos = r.json().get("videos", [])
+    if not videos:
+        raise RuntimeError("No Pexels videos found for query.")
+    
+    video_data = random.choice(videos)
+    video_url = video_data["video_files"][-1]["link"]
+    print(f"Downloading Pexels video: {video_url}")
+    video_path = os.path.join(tempfile.gettempdir(), "background.mp4")
+    with requests.get(video_url, stream=True) as vid_r:
+        vid_r.raise_for_status()
+        with open(video_path, "wb") as f:
+            for chunk in vid_r.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+    return video_path
 
 # -------------------------------
 # Helper: Upload to GCS
@@ -78,7 +71,6 @@ def upload_to_gcs(local_path, bucket_name):
     blob.make_public()
     return blob.public_url
 
-
 # -------------------------------
 # Create video
 # -------------------------------
@@ -90,10 +82,9 @@ def create_trivia_video():
         "Octopuses have three hearts.\n"
         "And wombat poop is cube-shaped!"
     )
-
     print("Creating video with fact:\n", fact)
 
-    bg_video_path = get_random_video()
+    bg_video_path = get_random_video("nature")  # Can adjust query
     bg_clip = VideoFileClip(bg_video_path).subclip(0, 20)
 
     audio_path = os.path.join(tempfile.gettempdir(), "speech.mp3")
@@ -103,7 +94,6 @@ def create_trivia_video():
     lines = fact.split("\n")
     clips = []
     segment_duration = audio_clip.duration / len(lines)
-
     for i, line in enumerate(lines):
         txt = TextClip(
             line,
@@ -122,9 +112,7 @@ def create_trivia_video():
 
     # Upload to GCS
     public_url = upload_to_gcs(output_path, "trivia-videos-output")
-
     return public_url
-
 
 # -------------------------------
 # Flask endpoint
@@ -133,15 +121,11 @@ def create_trivia_video():
 def generate_video():
     try:
         video_url = create_trivia_video()
-        return jsonify({
-            "status": "ok",
-            "video_url": video_url
-        })
+        return jsonify({"status": "ok", "video_url": video_url})
     except Exception as e:
         import traceback
         traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
-
 
 # -------------------------------
 # Main Entry
