@@ -164,7 +164,7 @@ def load_recent_facts(limit=10):
         print("Error loading facts from Firestore:", str(e))
         return []
 
-def get_unique_fact():
+def get_unique_fact(ytdest):
     recent = load_recent_facts()
     for _ in range(5):
         fact, source_code = get_dynamic_fact()
@@ -172,7 +172,10 @@ def get_unique_fact():
             save_fact_to_firestore(fact)  # <--- Use this only
             return fact, source_code
     # fallback if all failed
-    fact, source_code = get_dynamic_fact()
+    if ytdest == 'tech'
+        fact, source_code = get_dynamic_fact()
+    elif ytdest =='kk'
+        fact, source_code = get_dynamic_fact_JINJA()
     save_fact_to_firestore(fact)
     return fact, source_code
 
@@ -755,7 +758,7 @@ def generate_endpoint():
             fact = fact_data
             source_code = data.get("source_code", "X")
         else:
-            fact, source_code = get_unique_fact()
+            fact, source_code = get_unique_fact('tech')
         
         category = data.get("category") or infer_category_from_fact(fact)
 
@@ -790,13 +793,13 @@ def generate_endpoint():
         # === Korean pipeline ===
         try:
             data = request.get_json(silent=True) or {}
-            # === Main pipeline ===
+            # === Korean pipeline ===
             fact_data = data.get("fact")
             if fact_data:
                 fact = fact_data
                 source_code = data.get("source_code", "X")
             else:
-                fact, source_code = get_unique_fact()
+                fact, source_code = get_unique_fact('kk')
             
             category = data.get("category") or infer_category_from_fact(fact)    
 
