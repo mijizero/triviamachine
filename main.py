@@ -394,7 +394,7 @@ def sanitize_for_youtube(text, max_len=100):
         text = text[:max_len].rsplit(" ",1)[0]
     return text
 
-def upload_video_to_youtube_gcs(gcs_path, title, description, category, source_code, ytdest tags=None, privacy="public"):
+def upload_video_to_youtube_gcs(gcs_path, title, description, category, source_code, ytdest, tags=None, privacy="public"):
     try:
         if not gcs_path.startswith("gs://"):
             raise ValueError(f"Invalid GCS path: {gcs_path}")
@@ -771,7 +771,7 @@ def generate_endpoint():
             fact = fact_data
             source_code = data.get("source_code", "X")
         else:
-            fact, source_code = get_unique_fact('tech')
+            fact, source_code = get_unique_fact("tech")
         
         category = data.get("category") or infer_category_from_fact(fact)
 
@@ -795,7 +795,7 @@ def generate_endpoint():
             youtube_description,
             category,
             source_code,
-            'tech'
+            "tech"
         )
 
         main_result = {
@@ -813,7 +813,7 @@ def generate_endpoint():
                 fact = fact_data
                 source_code = data.get("source_code", "X")
             else:
-                fact, source_code = get_unique_fact('kk')
+                fact, source_code = get_unique_fact("kk")
             
             category = data.get("category") or infer_category_from_fact(fact)    
 
@@ -837,7 +837,7 @@ def generate_endpoint():
                 youtube_description,
                 category,
                 source_code,
-                'kk'
+                "kk"
             )
 
             qq_result = {
