@@ -112,7 +112,7 @@ def create_trivia_video():
 # -------------------------------
 # Flask endpoint
 # -------------------------------
-@app.route("/generate", methods=["GET"])
+@app.route("/generate", methods=["POST"])
 def generate_video():
     try:
         output_path = create_trivia_video()
