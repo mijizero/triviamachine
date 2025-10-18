@@ -3,7 +3,7 @@ import random
 import tempfile
 import requests
 from flask import Flask, jsonify
-from moviepy.editor import VideoFileClip, AudioFileClip, TextClip, CompositeVideoClip
+from moviepy.editor import VideoFileClip, AudioFileClip, TextClip, CompositeVideoClip, concatenate_audioclips
 from google.cloud import texttospeech, storage
 
 app = Flask(__name__)
@@ -72,42 +72,53 @@ def upload_to_gcs(local_path, bucket_name):
     return blob.public_url
 
 # -------------------------------
-# Create video
+# Create video with synced TTS
 # -------------------------------
-def create_trivia_video():
-    fact = (
-        "Did you know?\n"
-        "Honey never spoils — archaeologists found 3000-year-old honey still edible.\n"
-        "Bananas are berries, but strawberries aren’t!\n"
-        "Octopuses have three hearts.\n"
+def create_trivia_video_synced():
+    lines = [
+        "Did you know?",
+        "Honey never spoils — archaeologists found 3000-year-old honey still edible.",
+        "Bananas are berries, but strawberries aren’t!",
+        "Octopuses have three hearts.",
         "And wombat poop is cube-shaped!"
-    )
-    print("Creating video with fact:\n", fact)
+    ]
 
-    bg_video_path = get_random_video("nature")  # Can adjust query
-    bg_clip = VideoFileClip(bg_video_path).subclip(0, 20)
+    # Background video
+    bg_video_path = get_random_video("nature")
+    bg_clip = VideoFileClip(bg_video_path).subclip(0, 30)  # adjust length
 
-    audio_path = os.path.join(tempfile.gettempdir(), "speech.mp3")
-    synthesize_speech(fact, audio_path)
-    audio_clip = AudioFileClip(audio_path)
+    # Generate TTS for each line and collect durations
+    audio_clips = []
+    text_clips = []
+    current_start = 0
 
-    lines = fact.split("\n")
-    clips = []
-    segment_duration = audio_clip.duration / len(lines)
     for i, line in enumerate(lines):
-        txt = TextClip(
+        line_audio_path = os.path.join(tempfile.gettempdir(), f"line_{i}.mp3")
+        synthesize_speech(line, line_audio_path)
+        line_audio = AudioFileClip(line_audio_path)
+        audio_clips.append(line_audio)
+
+        txt_clip = TextClip(
             line,
             fontsize=50,
             color="white",
             stroke_color="black",
             stroke_width=2,
             font="DejaVu-Sans-Bold"
-        ).set_position("center").set_duration(segment_duration).set_start(i * segment_duration)
-        clips.append(txt)
+        ).set_position("center").set_duration(line_audio.duration).set_start(current_start)
 
-    composite = CompositeVideoClip([bg_clip, *clips])
-    composite = composite.set_audio(audio_clip)
-    output_path = os.path.join(tempfile.gettempdir(), "output.mp4")
+        text_clips.append(txt_clip)
+        current_start += line_audio.duration
+
+    # Concatenate audio clips
+    final_audio = concatenate_audioclips(audio_clips)
+
+    # Composite video with synced text
+    composite = CompositeVideoClip([bg_clip, *text_clips])
+    composite = composite.set_audio(final_audio)
+
+    # Output video
+    output_path = os.path.join(tempfile.gettempdir(), "output_synced.mp4")
     composite.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac")
 
     # Upload to GCS
@@ -120,7 +131,7 @@ def create_trivia_video():
 @app.route("/generate", methods=["POST"])
 def generate_video():
     try:
-        video_url = create_trivia_video()
+        video_url = create_trivia_video_synced()
         return jsonify({"status": "ok", "video_url": video_url})
     except Exception as e:
         import traceback
