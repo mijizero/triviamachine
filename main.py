@@ -179,9 +179,9 @@ def get_unique_fact():
 def get_dynamic_fact():
     """Try the 4 sources in random order and return (fact_text, source_label).
     If every source attempt fails, return the honey fallback with source 'Z'."""
-    sources = [1, 2, 3, 4]
+    sources = [1, 2]
     random.shuffle(sources)
-    source_label_map = {1: "A", 2: "B", 3: "C", 4: "D"}
+    source_label_map = {1: "A", 2: "B"}
     json_firestore = "https://storage.googleapis.com/trivia-videos-output/facts_history.json"
 
     def gemini_fact(prompt):
@@ -193,30 +193,8 @@ def get_dynamic_fact():
     for source in sources:
         label = source_label_map[source]
         try:
-            if source == 11:
-                try:
-                    res = requests.get(
-                        "https://en.wikipedia.org/api/rest_v1/page/random/summary",
-                        timeout=10
-                    )
-                    if res.ok:
-                        data = res.json()
-                        title = data.get("title", "")
-                        extract = data.get("extract", "")
-                        wiki_text = f"{title}: {extract}"
-                        prompt = (
-                            "Rewrite the following Wikipedia summary into a 3-sentence trivia fact. "
-                            "Start with 'Did you know', then add 2 supporting sentences that give background or interesting details.\n\n"
-                            f"Summary: {wiki_text}"
-                        )
-                        fact = gemini_fact(prompt)
-                        if fact:
-                            return fact, label
-                except Exception:
-                    # try next source
-                    continue
 
-            elif source == 2:
+            if source == 1:
                 prompt = (
                     "Give one factual and engaging piece of technology trivia in 3 sentences. "
                     "Sentence 1 must start with 'Did you know'. "
@@ -227,22 +205,12 @@ def get_dynamic_fact():
                 if fact:
                     return fact, label
 
-            elif source == 3:
+            elif source == 2:
                 prompt = (
-                    "Give one true and engaging trivia, fact, or recent news about kdrama, kpop, or korean celebrities in 3 sentences. "
-                    "Start with 'Did you know', then add 2 supporting sentences with factual context or significance."
-                    "The fact should not be the same concept or main idea as any of the facts in the json file at " + json_firestore
-                )
-                fact = gemini_fact(prompt)
-                if fact:
-                    return fact, label
-
-            elif source == 4:
-                prompt = (
-                    "Give one short, factual trivia about trending international media, movies, or celebrities in 3 sentences. "
+                    "Give one short, factual explanation on how some piece of technology or everyday product works in 3 sentences. "
                     "The first must start with 'Did you know'. "
                     "The next 2 sentences should give interesting supporting info or context."
-                    "The fact should not be the same concept or main idea as any of the facts in the json file at " + json_firestore
+                    "The fact should not be the same concept or main idea as any of the entries in the json file at " + json_firestore
                 )
                 fact = gemini_fact(prompt)
                 if fact:
