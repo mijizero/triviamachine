@@ -2,9 +2,11 @@ import os
 import random
 import tempfile
 import requests
-from flask import Flask, jsonify, request
-from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip, AudioFileClip
-from google.cloud import texttospeech
+from flask import Flask, jsonify
+from moviepy.editor import VideoFileClip, AudioFileClip
+from moviepy.video.tools.drawing import color_gradient
+from moviepy.video.VideoClip import TextClip, CompositeVideoClip
+from google.cloud import texttospeech, storage
 
 app = Flask(__name__)
 
@@ -40,51 +42,47 @@ def synthesize_speech(text, output_path):
 
 
 # -------------------------------
-# Helper: Get random background video (Pexels direct MP4s)
+# Helper: Download random video
 # -------------------------------
 def get_random_video():
-    # ✅ Real, direct MP4 files from Pexels CDN (no redirects, stable)
     sample_videos = [
-        "https://videos.pexels.com/video-files/856331/856331-hd_1920_1080_24fps.mp4",
-        "https://videos.pexels.com/video-files/857195/857195-hd_1920_1080_24fps.mp4",
-        "https://videos.pexels.com/video-files/855427/855427-hd_1920_1080_24fps.mp4",
-        "https://videos.pexels.com/video-files/1526909/1526909-hd_1920_1080_24fps.mp4",
-        "https://videos.pexels.com/video-files/1307711/1307711-hd_1920_1080_24fps.mp4"
+        "https://cdn.pixabay.com/vimeo/2987/forest-36802.mp4?width=640&hash=2c1b7efc7b8a6c3f5a9f3b6c38a8bb5b8c7b1e5f",
+        "https://cdn.pixabay.com/vimeo/4519/waterfall-22497.mp4?width=640&hash=9b59dfd33f7c776cdb31e5c32c1f7dbf4235b42e",
+        "https://cdn.pixabay.com/vimeo/2568/sky-11570.mp4?width=640&hash=7ef12db29f8358b0f414d9a6d4c6218f4bda74e3"
     ]
-
-    random.shuffle(sample_videos)
-    video_path = os.path.join(tempfile.gettempdir(), "background.mp4")
-
-    for url in sample_videos:
+    for url in random.sample(sample_videos, len(sample_videos)):
         print(f"Trying background: {url}")
-        try:
-            r = requests.get(url, stream=True, timeout=15)
-            content_type = r.headers.get("Content-Type", "")
-            if "video" not in content_type.lower():
-                print("⚠️ Not a valid video:", content_type)
-                continue
-
+        r = requests.get(url, stream=True)
+        content_type = r.headers.get("Content-Type", "")
+        if "video" in content_type:
+            video_path = os.path.join(tempfile.gettempdir(), "background.mp4")
             with open(video_path, "wb") as f:
                 for chunk in r.iter_content(chunk_size=8192):
                     if chunk:
                         f.write(chunk)
-
-            if os.path.getsize(video_path) > 100_000:
-                print("✅ Video downloaded successfully:", video_path)
-                return video_path
-            else:
-                print("⚠️ File too small, trying another...")
-        except Exception as e:
-            print("⚠️ Error downloading video:", e)
-
+            return video_path
+        else:
+            print(f"⚠️ Not a valid video: {content_type}")
     raise RuntimeError("No valid background video found.")
+
+
+# -------------------------------
+# Helper: Upload to GCS
+# -------------------------------
+def upload_to_gcs(local_path, bucket_name):
+    client = storage.Client()
+    bucket = client.bucket(bucket_name)
+    blob_name = os.path.basename(local_path)
+    blob = bucket.blob(blob_name)
+    blob.upload_from_filename(local_path)
+    blob.make_public()
+    return blob.public_url
 
 
 # -------------------------------
 # Create video
 # -------------------------------
 def create_trivia_video():
-    # Hardcoded 5-line fact
     fact = (
         "Did you know?\n"
         "Honey never spoils — archaeologists found 3000-year-old honey still edible.\n"
@@ -95,16 +93,13 @@ def create_trivia_video():
 
     print("Creating video with fact:\n", fact)
 
-    # 1. Download background video
     bg_video_path = get_random_video()
-    bg_clip = VideoFileClip(bg_video_path).subclip(0, 20)  # 20 sec limit
+    bg_clip = VideoFileClip(bg_video_path).subclip(0, 20)
 
-    # 2. Generate TTS audio
     audio_path = os.path.join(tempfile.gettempdir(), "speech.mp3")
     synthesize_speech(fact, audio_path)
     audio_clip = AudioFileClip(audio_path)
 
-    # 3. Prepare caption text
     lines = fact.split("\n")
     clips = []
     segment_duration = audio_clip.duration / len(lines)
@@ -120,13 +115,15 @@ def create_trivia_video():
         ).set_position("center").set_duration(segment_duration).set_start(i * segment_duration)
         clips.append(txt)
 
-    # 4. Combine background + captions + audio
     composite = CompositeVideoClip([bg_clip, *clips])
     composite = composite.set_audio(audio_clip)
     output_path = os.path.join(tempfile.gettempdir(), "output.mp4")
     composite.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac")
 
-    return output_path
+    # Upload to GCS
+    public_url = upload_to_gcs(output_path, "trivia-videos-output")
+
+    return public_url
 
 
 # -------------------------------
@@ -135,10 +132,10 @@ def create_trivia_video():
 @app.route("/generate", methods=["POST"])
 def generate_video():
     try:
-        output_path = create_trivia_video()
+        video_url = create_trivia_video()
         return jsonify({
             "status": "ok",
-            "output_path": output_path
+            "video_url": video_url
         })
     except Exception as e:
         import traceback
