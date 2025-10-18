@@ -2,7 +2,7 @@ import os
 import random
 import tempfile
 import requests
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip, AudioFileClip
 from google.cloud import texttospeech
 
@@ -17,7 +17,7 @@ def synthesize_speech(text, output_path):
 
     voice = texttospeech.VoiceSelectionParams(
         language_code="en-AU",
-        name="en-AU-Neural2-A",  # Female, natural
+        name="en-AU-Neural2-A",
         ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
     )
 
@@ -40,24 +40,44 @@ def synthesize_speech(text, output_path):
 
 
 # -------------------------------
-# Helper: Download random video
+# Helper: Get valid random video
 # -------------------------------
 def get_random_video():
-    # Example Pexels videos – free and legal to test
+    # Sample Pexels / Vimeo direct MP4 links (stable test sources)
     sample_videos = [
-        "https://player.vimeo.com/external/459378313.sd.mp4?s=28fca8ef8e1e086693a60a3f5cbb0dbb7a82b77f&profile_id=164&oauth2_token_id=57447761",
+        "https://player.vimeo.com/external/416150494.sd.mp4?s=0e86dfb21e8c0e7c6f029d1c27cbf4c1e0584e4f&profile_id=164",
+        "https://player.vimeo.com/external/459378313.sd.mp4?s=28fca8ef8e1e086693a60a3f5cbb0dbb7a82b77f&profile_id=164",
         "https://player.vimeo.com/external/376818701.sd.mp4?s=9dbf6df7d38e2854e54e4cf91520b486bdebe3a7&profile_id=164",
         "https://player.vimeo.com/external/209184812.sd.mp4?s=ba91b6fa19a7a7c7d44b6c8d0975f75bfcdfad87&profile_id=164"
     ]
-    url = random.choice(sample_videos)
+
+    random.shuffle(sample_videos)
     video_path = os.path.join(tempfile.gettempdir(), "background.mp4")
 
-    r = requests.get(url, stream=True)
-    with open(video_path, "wb") as f:
-        for chunk in r.iter_content(chunk_size=8192):
-            if chunk:
-                f.write(chunk)
-    return video_path
+    for url in sample_videos:
+        print(f"Trying background: {url}")
+        try:
+            r = requests.get(url, stream=True, timeout=10)
+            content_type = r.headers.get("Content-Type", "")
+            if "video" not in content_type.lower():
+                print("⚠️ Not a valid video:", content_type)
+                continue
+
+            with open(video_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+
+            # verify file size > 100KB
+            if os.path.getsize(video_path) > 100_000:
+                print("✅ Video downloaded successfully:", video_path)
+                return video_path
+            else:
+                print("⚠️ File too small, trying another video...")
+        except Exception as e:
+            print("⚠️ Error downloading video:", e)
+
+    raise RuntimeError("No valid background video found.")
 
 
 # -------------------------------
@@ -77,7 +97,7 @@ def create_trivia_video():
 
     # 1. Download background video
     bg_video_path = get_random_video()
-    bg_clip = VideoFileClip(bg_video_path).subclip(0, 20)  # Limit duration
+    bg_clip = VideoFileClip(bg_video_path).subclip(0, 20)
 
     # 2. Generate TTS audio
     audio_path = os.path.join(tempfile.gettempdir(), "speech.mp3")
