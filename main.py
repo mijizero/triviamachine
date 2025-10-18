@@ -321,13 +321,18 @@ def upload_to_gcs(local_path, gcs_path):
     https_url = f"https://storage.googleapis.com/{bucket_name}/{blob_path}"
     return gs_url, https_url
 
-def synthesize_speech(text, output_path):
+def synthesize_speech(text, output_path, ytdest):
     client = texttospeech.TextToSpeechClient()
     synthesis_input = texttospeech.SynthesisInput(text=text)
     voice = texttospeech.VoiceSelectionParams(
-        language_code="en-AU",
-        name="en-AU-Neural2-D",
-        ssml_gender=texttospeech.SsmlVoiceGender.MALE
+        if ytdest == "tech":
+            language_code="en-AU",
+            name="en-AU-Neural2-D",
+            ssml_gender=texttospeech.SsmlVoiceGender.MALE
+        elif ytdest == "kk":
+            language_code="en-AU",
+            name="en-AU-Neural2-A",
+            ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
     )
     audio_config = texttospeech.AudioConfig(
         audio_encoding=texttospeech.AudioEncoding.MP3,
@@ -560,7 +565,7 @@ def create_trivia_video(fact_text, output_gcs_path="gs://trivia-videos-output/ou
 
         # --- SINGLE continuous TTS for all pages ---
         audio_path = os.path.join(tmpdir, "audio_full.mp3")
-        synthesize_speech(fact_text, audio_path)
+        synthesize_speech(fact_text, audio_path, ytdest)
         full_audio_clip = AudioFileClip(audio_path)
         audio_duration = full_audio_clip.duration
 
