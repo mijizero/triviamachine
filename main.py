@@ -116,7 +116,7 @@ def create_trivia_video():
             color="white",
             stroke_color="black",
             stroke_width=2,
-            font=DejaVu-Sans-Bold"
+            font="DejaVu-Sans-Bold"
         ).set_position("center").set_duration(segment_duration).set_start(i * segment_duration)
         clips.append(txt)
 
