@@ -17,9 +17,7 @@ PEXELS_API_KEY = "zXJ9dAVT3F0TLcEqMkGXtE5H8uePbhEvuq0kBnWnbq8McMpIKTQeWnDQ"
 # -------------------------------
 # Helper: Generate speech
 # -------------------------------
-def synthesize_speech(text, output_path_wav):
-    temp_mp3 = os.path.join(tempfile.gettempdir(), "temp_speech.mp3")
-    
+def synthesize_speech(text, output_path):
     client = texttospeech.TextToSpeechClient()
     synthesis_input = texttospeech.SynthesisInput(text=text)
     voice = texttospeech.VoiceSelectionParams(
@@ -33,18 +31,13 @@ def synthesize_speech(text, output_path_wav):
         pitch=-1.0,
         volume_gain_db=1.5
     )
-    response = client.synthesize_speech(
-        input=synthesis_input, voice=voice, audio_config=audio_config
-    )
-    
-    # Save MP3
-    with open(temp_mp3, "wb") as out:
+    response = client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
+    with open(output_path, "wb") as out:
         out.write(response.audio_content)
-    
-    # Convert to WAV
-    sound = AudioSegment.from_mp3(temp_mp3)
-    sound.export(output_path_wav, format="wav")
-    return output_path_wav
+    # Convert MP3 to WAV for MoviePy
+    wav_path = output_path.replace(".mp3", ".wav")
+    AudioSegment.from_mp3(output_path).export(wav_path, format="wav")
+    return wav_path
 
 # -------------------------------
 # Helper: Download random video from Pexels
@@ -99,25 +92,24 @@ def create_trivia_video():
     bg_video_path = get_random_video("nature")
     bg_clip = VideoFileClip(bg_video_path).subclip(0, 20)
 
-    # Synthesize TTS to WAV
-    audio_path_wav = os.path.join(tempfile.gettempdir(), "speech.wav")
-    synthesize_speech(fact, audio_path_wav)
-    audio_clip = AudioFileClip(audio_path_wav)
+    # Generate speech and convert to WAV
+    audio_path = os.path.join(tempfile.gettempdir(), "speech.mp3")
+    wav_path = synthesize_speech(fact, audio_path)
+    audio_clip = AudioFileClip(wav_path)
 
-    # Split text into lines and sync with audio
+    # Create text clips (full duration of audio)
     lines = fact.split("\n")
     clips = []
-    segment_duration = audio_clip.duration / len(lines)
     for i, line in enumerate(lines):
-        txt = TextClip(
+        txt_clip = TextClip(
             line,
             fontsize=50,
             color="white",
             stroke_color="black",
             stroke_width=2,
             font="DejaVu-Sans-Bold"
-        ).set_position("center").set_duration(segment_duration).set_start(i * segment_duration)
-        clips.append(txt)
+        ).set_position("center").set_duration(audio_clip.duration)
+        clips.append(txt_clip)
 
     # Composite video
     composite = CompositeVideoClip([bg_clip, *clips])
