@@ -734,7 +734,7 @@ def generate_endpoint():
             "youtube_video_id": video_id
         }
 
-        # === QQ pipeline ===
+        # === Korean pipeline ===
         try:
             data = request.get_json(silent=True) or {}
             # === Main pipeline ===
