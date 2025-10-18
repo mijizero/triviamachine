@@ -3,7 +3,7 @@ import random
 import tempfile
 import requests
 from flask import Flask, jsonify
-from moviepy.editor import VideoFileClip, AudioFileClip, TextClip, CompositeVideoClip
+from moviepy.editor import VideoFileClip, AudioFileClip, TextClip, CompositeVideoClip, ImageClip
 from google.cloud import texttospeech, storage
 from pydub import AudioSegment
 
