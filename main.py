@@ -534,90 +534,95 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
         google_api_key = get_secret("GG_API")
         google_cx_id = get_secret("GG_CX")
 
-        # Unified image search pipeline for both tech and kk:
-        # 1) Google Custom Search -> 2) DuckDuckGo -> 3) Pexels -> 4) Final fallback
-
-        # --- 1️⃣ Try Google Custom Search first ---
+        # --- Unified image search pipeline (Google → DuckDuckGo → Pexels → Fallback) ---
         try:
-            google_url = (
-                f"https://www.googleapis.com/customsearch/v1?q={search_query}"
-                f"&cx={google_cx_id}&key={google_api_key}&searchType=image&num=1"
-            )
-            g_resp = requests.get(google_url, timeout=10)
-            if g_resp.ok:
-                g_data = g_resp.json()
-                if "items" in g_data and len(g_data["items"]) > 0:
-                    img_url = g_data["items"][0].get("link")
-                    if img_url:
-                        response = requests.get(img_url, stream=True, timeout=10)
-                        if response.status_code == 200 and "image" in response.headers.get("Content-Type", ""):
-                            with open(bg_path, "wb") as f:
-                                for chunk in response.iter_content(8192):
-                                    f.write(chunk)
-                            valid_image = True
-                            image_source = "Google Custom Search"
-                            print("✅ Google Custom Search image used.")
+            # --- 1️⃣ Try Google Custom Search first ---
+            try:
+                google_url = (
+                    f"https://www.googleapis.com/customsearch/v1?q={search_query}"
+                    f"&cx={google_cx_id}&key={google_api_key}&searchType=image&num=1"
+                )
+                g_resp = requests.get(google_url, timeout=10)
+                if g_resp.ok:
+                    g_data = g_resp.json()
+                    if "items" in g_data and len(g_data["items"]) > 0:
+                        img_url = g_data["items"][0].get("link")
+                        if img_url:
+                            response = requests.get(img_url, stream=True, timeout=10)
+                            if response.status_code == 200 and "image" in response.headers.get("Content-Type", ""):
+                                with open(bg_path, "wb") as f:
+                                    for chunk in response.iter_content(8192):
+                                        f.write(chunk)
+                                valid_image = True
+                                image_source = "Google Custom Search"
+                                print(f"[{ytdest.upper()}] ✅ Google Custom Search image used.")
+            except Exception as e:
+                print(f"[{ytdest.upper()}] ⚠️ Google Custom Search failed:", e)
+
+            # --- 2️⃣ Fallback to DuckDuckGo ---
+            if not valid_image:
+                try:
+                    with DDGS() as ddgs:
+                        results = list(ddgs.images(search_query, max_results=1))
+                    if results:
+                        img_url = results[0].get("image")
+                        if img_url:
+                            response = requests.get(img_url, stream=True, timeout=10)
+                            if response.status_code == 200 and "image" in response.headers.get("Content-Type", ""):
+                                with open(bg_path, "wb") as f:
+                                    for chunk in response.iter_content(8192):
+                                        f.write(chunk)
+                                valid_image = True
+                                image_source = "DuckDuckGo"
+                                print(f"[{ytdest.upper()}] ✅ DuckDuckGo fallback used.")
+                except Exception as e:
+                    print(f"[{ytdest.upper()}] ⚠️ DuckDuckGo search failed:", e)
+
+            # --- 3️⃣ Fallback to Pexels ---
+            if not valid_image:
+                try:
+                    simplified_query = search_query.lower()
+                    for word in ["in", "of", "the", "from", "at", "on", "a", "an"]:
+                        simplified_query = simplified_query.replace(f" {word} ", " ")
+                    simplified_query = simplified_query.strip().split()[:2]
+                    simplified_query = " ".join(simplified_query) or search_query
+
+                    headers = {"Authorization": "zXJ9dAVT3F0TLcEqMkGXtE5H8uePbhEvuq0kBnWnbq8McMpIKTQeWnDQ"}
+                    pexels_url = f"https://api.pexels.com/v1/search?query={simplified_query}&orientation=portrait&per_page=1"
+                    r = requests.get(pexels_url, headers=headers, timeout=10)
+                    if r.ok:
+                        data = r.json()
+                        if data.get("photos"):
+                            img_url = data["photos"][0]["src"]["original"]
+                            response = requests.get(img_url, stream=True, timeout=10)
+                            if response.status_code == 200 and "image" in response.headers.get("Content-Type", ""):
+                                with open(bg_path, "wb") as f:
+                                    for chunk in response.iter_content(8192):
+                                        f.write(chunk)
+                                valid_image = True
+                                image_source = "Pexels"
+                                print(f"[{ytdest.upper()}] ✅ Pexels fallback used.")
+                except Exception as e:
+                    print(f"[{ytdest.upper()}] ⚠️ Pexels fallback failed:", e)
+
+            # --- 4️⃣ Final fallback ---
+            if not valid_image:
+                fallback_url = "https://storage.googleapis.com/trivia-videos-output/background.jpg"
+                response = requests.get(fallback_url)
+                with open(bg_path, "wb") as f:
+                    f.write(response.content)
+                image_source = "Fallback"
+                print(f"[{ytdest.upper()}] ⚠️ Final fallback image used.")
         except Exception as e:
-            print("⚠️ Google Custom Search failed:", e)
+            print(f"[{ytdest.upper()}] 🔥 Image search block failed:", e)
 
-        # --- 2️⃣ Fallback to DuckDuckGo ---
-        if not valid_image:
-            try:
-                with DDGS() as ddgs:
-                    results = list(ddgs.images(search_query, max_results=1))
-                if results:
-                    img_url = results[0].get("image")
-                    if img_url:
-                        response = requests.get(img_url, stream=True, timeout=10)
-                        if response.status_code == 200 and "image" in response.headers.get("Content-Type", ""):
-                            with open(bg_path, "wb") as f:
-                                for chunk in response.iter_content(8192):
-                                    f.write(chunk)
-                            valid_image = True
-                            image_source = "DuckDuckGo"
-                            print("✅ DuckDuckGo fallback used.")
-            except Exception as e:
-                print("⚠️ DuckDuckGo search failed:", e)
-
-        # --- 3️⃣ Fallback to Pexels ---
-        if not valid_image:
-            try:
-                simplified_query = search_query.lower()
-                for word in ["in", "of", "the", "from", "at", "on", "a", "an"]:
-                    simplified_query = simplified_query.replace(f" {word} ", " ")
-                simplified_query = simplified_query.strip().split()[:2]
-                simplified_query = " ".join(simplified_query) or search_query
-
-                headers = {"Authorization": "zXJ9dAVT3F0TLcEqMkGXtE5H8uePbhEvuq0kBnWnbq8McMpIKTQeWnDQ"}
-                pexels_url = f"https://api.pexels.com/v1/search?query={simplified_query}&orientation=portrait&per_page=1"
-                r = requests.get(pexels_url, headers=headers, timeout=10)
-                if r.ok:
-                    data = r.json()
-                    if data.get("photos"):
-                        img_url = data["photos"][0]["src"]["original"]
-                        response = requests.get(img_url, stream=True, timeout=10)
-                        if response.status_code == 200 and "image" in response.headers.get("Content-Type", ""):
-                            with open(bg_path, "wb") as f:
-                                for chunk in response.iter_content(8192):
-                                    f.write(chunk)
-                            valid_image = True
-                            image_source = "Pexels"
-                            print("✅ Pexels fallback used.")
-            except Exception as e:
-                print("Pexels fallback failed:", e)
-
-        # --- 4️⃣ Final fallback ---
-        if not valid_image:
-            fallback_url = "https://storage.googleapis.com/trivia-videos-output/background.jpg"
-            response = requests.get(fallback_url)
-            with open(bg_path, "wb") as f:
-                f.write(response.content)
-            image_source = "Fallback"
-            print("⚠️ Final fallback image used.")
-
-        # Log image source + url
-        print(f"✅ Image Source: {image_source}")
-        print(f"✅ Image URL: {img_url}")
+        # ✅ Always log the final image source and URL (even if None)
+        if not image_source:
+            image_source = "Unknown (No image fetched)"
+        if not img_url:
+            img_url = "None"
+        print(f"[{ytdest.upper()}] ✅ Image Source: {image_source}")
+        print(f"[{ytdest.upper()}] ✅ Image URL: {img_url}")
 
         # --- Resize/crop to 1080x1920 ---
         target_size = (1080, 1920)
