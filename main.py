@@ -311,34 +311,64 @@ from vertexai.generative_models import GenerativeModel
 def generate_image_search_query(fact_text):
     """
     Generate a concise, high-quality search query for an image based on the trivia fact.
-    Uses Gemini to handle all "post-processing" instructions: max words, essential descriptors,
-    no punctuation, portrait/high-quality preference.
+    Uses Gemini to handle all post-processing: max words, essential descriptors,
+    no punctuation, high-quality visuals.
     """
+    # Initialize Gemini model once
+    try:
+        model = GenerativeModel("gemini-2.5-flash")
+    except Exception as e:
+        print("⚠️ Failed to initialize Gemini model:", e)
+        model = None
+
+    # 🧠 Combined expert prompt
     prompt = (
         "You are an expert at creating search queries for image search APIs. "
         "Given the following trivia fact, generate the best possible search query that will yield a relevant, "
-        "high-quality, portrait-style image. "
+        "high-quality.\n\n"
         "Rules:\n"
-        "- Using 4 to 6 words.\n"
-        "- Remove all punctuation.\n"
+        "- Use 4 to 8 words only.\n"
+        "- No punctuation.\n"
         "- Include only essential descriptors (main subject, key context, proper names if applicable).\n"
-        "- Prioritize Actual names from the main idea.\n"
+        "- Prioritize actual names or brands from the main idea.\n"
+        "- Add subtle visual hints (e.g. 'photo', 'cinematic still', 'HD').\n"
         "- Output only the query string.\n\n"
+        "Examples:\n"
+        '"AI smartphone comparison" → "modern smartphone AI technology macro photo"\n'
+        '"K-drama romance" → "Korean drama emotional couple HD still"\n'
+        '"F1 crash" → "Formula 1 car crash track photo"\n\n"
         f"Fact: {fact_text}"
     )
 
     try:
-        model = GenerativeModel("gemini-2.5-flash")
-        response = model.generate_content(prompt)
-        query = response.text.strip() if response and getattr(response, "text", None) else ""
-        if not query:
-            # fallback: simple cleaned keywords
-            query = " ".join(fact_text.lower().replace("?", "").replace(".", "").split()[:5])
-        return query
+        if model:
+            response = model.generate_content(prompt)
+            search_query = (
+                response.text.strip()
+                if hasattr(response, "text") and response.text
+                else fact_text
+            )
+        else:
+            raise Exception("Model not available")
+
+        # 🩵 Clean-up & ensure relevance
+        search_query = search_query.replace('"', '').replace("'", "")
+        if len(search_query.split()) > 10:
+            search_query = " ".join(search_query.split()[:10])
+        if not any(word in search_query.lower() for word in ["photo", "image", "still", "portrait"]):
+            search_query += " photo"
+
+        print(f"🎯 Final Search Query: {search_query}")
+        return search_query
+
     except Exception as e:
-        print("⚠️ Gemini search query generation failed:", e)
-        # fallback: simple cleaned keywords
-        return " ".join(fact_text.lower().replace("?", "").replace(".", "").split()[:5])
+        print(f"⚠️ Gemini search query generation failed: {e}")
+        # Simple fallback: 4–5 cleaned keywords
+        fallback_query = " ".join(
+            fact_text.lower().replace("?", "").replace(".", "").split()[:5]
+        ) + " photo"
+        print(f"🪄 Fallback Search Query: {fallback_query}")
+        return fallback_query
 
 # -------------------------------
 # Helpers
@@ -524,22 +554,11 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
     with tempfile.TemporaryDirectory() as tmpdir:
         fact_text = fact_text.replace("*", "").strip()
 
-        # --- 🧠 Refined Gemini-powered search query ---
+        # ✅ Generate refined image search query directly
         try:
-            gemini_prompt = (
-                "You are a visual search assistant helping generate image queries. "
-                f'Given this topic: "{fact_text}", '
-                "create the most visually accurate and short search phrase (max 10 words) "
-                "that would return real, relevant, and high-quality images for this theme. "
-                "Examples: "
-                '"AI smartphone comparison" → "modern smartphone AI technology macro photo"; '
-                '"K-drama romance" → "Korean drama emotional couple HD still"; '
-                '"F1 crash" → "Formula 1 car crash track photo". '
-                "Return only the search phrase."
-            )
-            search_query = generate_image_search_query(gemini_prompt)
+            search_query = generate_image_search_query(fact_text)
         except Exception as e:
-            print(f"[{ytdest.upper()}] ⚠️ Gemini query generation failed: {e}")
+            print(f"[{ytdest.upper()}] ⚠️ Search query generation failed: {e}")
             search_query = fact_text
 
         print(f"[{ytdest.upper()}] 🎯 Refined Image Search Query → {search_query}")
