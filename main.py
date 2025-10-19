@@ -523,24 +523,43 @@ def is_similar(a, b, threshold=0.8):
 def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-output/output.mp4"):
     with tempfile.TemporaryDirectory() as tmpdir:
         fact_text = fact_text.replace("*", "").strip()
-        search_query = generate_image_search_query(fact_text)
-        print(f"[{ytdest.upper()}] Image search query → {search_query}")
+
+        # --- 🧠 Refined Gemini-powered search query ---
+        try:
+            gemini_prompt = (
+                "You are a visual search assistant helping generate image queries. "
+                f'Given this topic: "{fact_text}", '
+                "create the most visually accurate and short search phrase (max 10 words) "
+                "that would return real, relevant, and high-quality images for this theme. "
+                "Examples: "
+                '"AI smartphone comparison" → "modern smartphone AI technology macro photo"; '
+                '"K-drama romance" → "Korean drama emotional couple HD still"; '
+                '"F1 crash" → "Formula 1 car crash track photo". '
+                "Return only the search phrase."
+            )
+            search_query = generate_image_search_query(gemini_prompt)
+        except Exception as e:
+            print(f"[{ytdest.upper()}] ⚠️ Gemini query generation failed: {e}")
+            search_query = fact_text
+
+        print(f"[{ytdest.upper()}] 🎯 Refined Image Search Query → {search_query}")
+
         bg_path = os.path.join(tmpdir, "background.jpg")
         valid_image = False
         img_url = None
-        image_source = None  # ✅ added for logging consistency
+        image_source = None
 
-        # 🧠 Define Google Custom Search credentials (no env vars)
+        # --- 🧩 Load secrets for Google Custom Search ---
         google_api_key = get_secret("GG_API")
         google_cx_id = get_secret("GG_CX")
 
-        # --- Unified image search pipeline (Google → DuckDuckGo → Pexels → Fallback) ---
         try:
             # --- 1️⃣ Try Google Custom Search first ---
             try:
                 google_url = (
-                    f"https://www.googleapis.com/customsearch/v1?q={search_query}"
-                    f"&cx={google_cx_id}&key={google_api_key}&searchType=image&num=1"
+                    f"https://www.googleapis.com/customsearch/v1"
+                    f"?q={search_query}&cx={google_cx_id}&key={google_api_key}"
+                    f"&searchType=image&num=1&imgType=photo&imgSize=large&safe=medium"
                 )
                 g_resp = requests.get(google_url, timeout=10)
                 if g_resp.ok:
@@ -555,36 +574,17 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
                                         f.write(chunk)
                                 valid_image = True
                                 image_source = "Google Custom Search"
-                                print(f"[{ytdest.upper()}] ✅ Google Custom Search image used.")
+                                print(f"[{ytdest.upper()}] ✅ Google image used: {img_url}")
             except Exception as e:
                 print(f"[{ytdest.upper()}] ⚠️ Google Custom Search failed:", e)
 
-            # --- 2️⃣ Fallback to DuckDuckGo ---
-            if not valid_image:
-                try:
-                    with DDGS() as ddgs:
-                        results = list(ddgs.images(search_query, max_results=1))
-                    if results:
-                        img_url = results[0].get("image")
-                        if img_url:
-                            response = requests.get(img_url, stream=True, timeout=10)
-                            if response.status_code == 200 and "image" in response.headers.get("Content-Type", ""):
-                                with open(bg_path, "wb") as f:
-                                    for chunk in response.iter_content(8192):
-                                        f.write(chunk)
-                                valid_image = True
-                                image_source = "DuckDuckGo"
-                                print(f"[{ytdest.upper()}] ✅ DuckDuckGo fallback used.")
-                except Exception as e:
-                    print(f"[{ytdest.upper()}] ⚠️ DuckDuckGo search failed:", e)
-
-            # --- 3️⃣ Fallback to Pexels ---
+            # --- 2️⃣ Fallback to Pexels (prioritized aesthetic source) ---
             if not valid_image:
                 try:
                     simplified_query = search_query.lower()
                     for word in ["in", "of", "the", "from", "at", "on", "a", "an"]:
                         simplified_query = simplified_query.replace(f" {word} ", " ")
-                    simplified_query = simplified_query.strip().split()[:2]
+                    simplified_query = simplified_query.strip().split()[:3]
                     simplified_query = " ".join(simplified_query) or search_query
 
                     headers = {"Authorization": "zXJ9dAVT3F0TLcEqMkGXtE5H8uePbhEvuq0kBnWnbq8McMpIKTQeWnDQ"}
@@ -601,9 +601,28 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
                                         f.write(chunk)
                                 valid_image = True
                                 image_source = "Pexels"
-                                print(f"[{ytdest.upper()}] ✅ Pexels fallback used.")
+                                print(f"[{ytdest.upper()}] ✅ Pexels image used: {img_url}")
                 except Exception as e:
                     print(f"[{ytdest.upper()}] ⚠️ Pexels fallback failed:", e)
+
+            # --- 3️⃣ Fallback to DuckDuckGo (broad coverage) ---
+            if not valid_image:
+                try:
+                    with DDGS() as ddgs:
+                        results = list(ddgs.images(search_query, max_results=1))
+                    if results:
+                        img_url = results[0].get("image")
+                        if img_url:
+                            response = requests.get(img_url, stream=True, timeout=10)
+                            if response.status_code == 200 and "image" in response.headers.get("Content-Type", ""):
+                                with open(bg_path, "wb") as f:
+                                    for chunk in response.iter_content(8192):
+                                        f.write(chunk)
+                                valid_image = True
+                                image_source = "DuckDuckGo"
+                                print(f"[{ytdest.upper()}] ✅ DuckDuckGo image used: {img_url}")
+                except Exception as e:
+                    print(f"[{ytdest.upper()}] ⚠️ DuckDuckGo search failed:", e)
 
             # --- 4️⃣ Final fallback ---
             if not valid_image:
@@ -612,17 +631,16 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
                 with open(bg_path, "wb") as f:
                     f.write(response.content)
                 image_source = "Fallback"
-                print(f"[{ytdest.upper()}] ⚠️ Final fallback image used.")
+                img_url = fallback_url
+                print(f"[{ytdest.upper()}] ⚠️ Final fallback used: {img_url}")
+
         except Exception as e:
             print(f"[{ytdest.upper()}] 🔥 Image search block failed:", e)
 
-        # ✅ Always log the final image source and URL (even if None)
-        if not image_source:
-            image_source = "Unknown (No image fetched)"
-        if not img_url:
-            img_url = "None"
-        print(f"[{ytdest.upper()}] ✅ Image Source: {image_source}")
-        print(f"[{ytdest.upper()}] ✅ Image URL: {img_url}")
+        # ✅ Always log final source
+        print(f"[{ytdest.upper()}] 🖼️ Image Source: {image_source}")
+        print(f"[{ytdest.upper()}] 🔗 Image URL: {img_url}")
+
 
         # --- Resize/crop to 1080x1920 ---
         target_size = (1080, 1920)
