@@ -3,7 +3,7 @@ import random
 import tempfile
 import requests
 from flask import Flask, jsonify
-from moviepy.editor import VideoFileClip, AudioFileClip, TextClip, CompositeVideoClip, ImageClip
+from moviepy.editor import VideoFileClip, AudioFileClip, CompositeVideoClip, ImageClip
 from google.cloud import texttospeech, storage
 from pydub import AudioSegment
 from PIL import Image, ImageDraw, ImageFont
@@ -94,6 +94,11 @@ def create_trivia_video():
     bg_video_path = get_random_video("nature")
     bg_clip = VideoFileClip(bg_video_path).subclip(0, 20)
 
+    # Resize/crop to vertical 1080x1920
+    bg_clip = bg_clip.resize(height=1920)
+    # Center crop width
+    bg_clip = bg_clip.crop(x_center=bg_clip.w/2, width=1080)
+
     # --- Generate speech ---
     audio_path = os.path.join(tempfile.gettempdir(), "speech.mp3")
     wav_path = synthesize_speech(fact, audio_path)
@@ -112,7 +117,7 @@ def create_trivia_video():
     clips = []
     page_duration = audio_duration / len(pages)
     for i, page_text in enumerate(pages):
-        img = Image.new("RGB", (1080, 1920), color=(0,0,0))
+        img = Image.new("RGB", (1080, 1920), color=(0,0,0,0))
         draw = ImageDraw.Draw(img)
         bbox = draw.multiline_textbbox((0,0), page_text, font=font, spacing=15)
         text_w, text_h = bbox[2]-bbox[0], bbox[3]-bbox[1]
@@ -123,7 +128,7 @@ def create_trivia_video():
             page_text,
             font=font,
             fill="white",
-            stroke_width=2,
+            stroke_width=3,
             stroke_fill="black",
             spacing=15,
             align="center"
@@ -135,7 +140,7 @@ def create_trivia_video():
         clips.append(clip)
 
     # --- Composite with background video ---
-    composite = CompositeVideoClip([bg_clip, *clips])
+    composite = CompositeVideoClip([bg_clip, *clips], size=(1080,1920))
     composite = composite.set_audio(audio_clip)
     output_path = os.path.join(tmp_dir, "output.mp4")
     composite.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac")
