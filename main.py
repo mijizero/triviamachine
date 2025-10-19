@@ -94,10 +94,16 @@ def create_trivia_video():
     bg_video_path = get_random_video("nature")
     bg_clip = VideoFileClip(bg_video_path).subclip(0, 20)
 
-    # Resize/crop to vertical 1080x1920
+    # Ensure vertical fill for Shorts (1080x1920)
+    # Scale height to 1920
     bg_clip = bg_clip.resize(height=1920)
-    # Center crop width
-    bg_clip = bg_clip.crop(x_center=bg_clip.w/2, width=1080)
+    # If width < 1080, pad sides
+    if bg_clip.w < 1080:
+        from moviepy.video.fx.all import margin
+        bg_clip = margin(bg_clip, left=(1080-bg_clip.w)//2, right=(1080-bg_clip.w)//2, color=(0,0,0))
+    # If width > 1080, crop center
+    elif bg_clip.w > 1080:
+        bg_clip = bg_clip.crop(x_center=bg_clip.w/2, width=1080)
 
     # --- Generate speech ---
     audio_path = os.path.join(tempfile.gettempdir(), "speech.mp3")
@@ -106,16 +112,15 @@ def create_trivia_video():
     audio_duration = audio_clip.duration
 
     # --- Split fact into 2-line pages ---
+    from PIL import Image, ImageDraw, ImageFont
     tmp_dir = tempfile.gettempdir()
-    font_path = "Roboto-Regular.ttf"
-    font = ImageFont.truetype(font_path, 55)
+    font = ImageFont.truetype("Roboto-Regular.ttf", 55)
 
     lines = fact.replace("*","").split("\n")
     pages = ["\n".join(lines[i:i+2]) for i in range(0, len(lines), 2)]
 
-    # --- Create images for each page with start times ---
+    # --- Create images for each page ---
     clips = []
-    page_duration = audio_duration / len(pages)
     for i, page_text in enumerate(pages):
         img = Image.new("RGB", (1080, 1920), color=(0,0,0,0))
         draw = ImageDraw.Draw(img)
@@ -128,19 +133,18 @@ def create_trivia_video():
             page_text,
             font=font,
             fill="white",
-            stroke_width=3,
+            stroke_width=2,
             stroke_fill="black",
             spacing=15,
             align="center"
         )
         img_path = os.path.join(tmp_dir, f"page_{i}.png")
         img.save(img_path)
-
-        clip = ImageClip(img_path).set_duration(page_duration).set_start(i*page_duration)
-        clips.append(clip)
+        # Set duration proportional to total audio
+        clips.append(ImageClip(img_path).set_duration(audio_duration/len(pages)).set_position("center"))
 
     # --- Composite with background video ---
-    composite = CompositeVideoClip([bg_clip, *clips], size=(1080,1920))
+    composite = CompositeVideoClip([bg_clip, *clips])
     composite = composite.set_audio(audio_clip)
     output_path = os.path.join(tmp_dir, "output.mp4")
     composite.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac")
