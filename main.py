@@ -516,6 +516,7 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
     with tempfile.TemporaryDirectory() as tmpdir:
         fact_text = fact_text.replace("*", "").strip()
         search_query = generate_image_search_query(fact_text)
+        print(f"[{ytdest.upper()}] Image search query → {search_query}")
         bg_path = os.path.join(tmpdir, "background.jpg")
         valid_image = False
         img_url = None
