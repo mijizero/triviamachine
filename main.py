@@ -299,23 +299,38 @@ def get_dynamic_fact_JINJA():
 # -------------------------------
 # Gemini Helpers
 # -------------------------------
-def extract_search_query(fact_text):
-    fact_clean = fact_text.replace("Did you know", "").replace("did you know", "").replace("?", "").strip()
-    model = GenerativeModel("gemini-2.5-flash")
+from vertexai.generative_models import GenerativeModel
+
+def generate_image_search_query(fact_text):
+    """
+    Generate a concise, high-quality search query for an image based on the trivia fact.
+    Uses Gemini to handle all "post-processing" instructions: max words, essential descriptors,
+    no punctuation, portrait/high-quality preference.
+    """
     prompt = (
-        "From the following trivia fact, extract only the main subject or topic "
-        "that best represents the visual focus for an image search. "
-        "Return only the concise keyword or phrase, without extra words or punctuation.\n\n"
-        f"Fact: {fact_clean}"
+        "You are an expert at creating search queries for image search APIs. "
+        "Given the following trivia fact, generate the best possible search query that will yield a relevant, "
+        "high-quality, portrait-style image. "
+        "Rules:\n"
+        "- Maximum 6 words.\n"
+        "- Remove all punctuation.\n"
+        "- Include only essential descriptors (main subject, key context, proper names if applicable).\n"
+        "- Output only the query string.\n\n"
+        f"Fact: {fact_text}"
     )
+
     try:
+        model = GenerativeModel("gemini-2.5-flash")
         response = model.generate_content(prompt)
-        text = response.text.strip() if response and response.text else ""
-        if len(text.split()) > 6:
-            text = " ".join(fact_clean.split()[:5])
-        return text or fact_clean
-    except Exception:
-        return fact_clean
+        query = response.text.strip() if response and getattr(response, "text", None) else ""
+        if not query:
+            # fallback: simple cleaned keywords
+            query = " ".join(fact_text.lower().replace("?", "").replace(".", "").split()[:5])
+        return query
+    except Exception as e:
+        print("⚠️ Gemini search query generation failed:", e)
+        # fallback: simple cleaned keywords
+        return " ".join(fact_text.lower().replace("?", "").replace(".", "").split()[:5])
 
 # -------------------------------
 # Helpers
@@ -500,7 +515,7 @@ def is_similar(a, b, threshold=0.8):
 def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-output/output.mp4"):
     with tempfile.TemporaryDirectory() as tmpdir:
         fact_text = fact_text.replace("*", "").strip()
-        search_query = extract_search_query(fact_text)
+        search_query = generate_image_search_query(fact_text)
         bg_path = os.path.join(tmpdir, "background.jpg")
         valid_image = False
         img_url = None
