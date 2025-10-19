@@ -327,16 +327,14 @@ def generate_image_search_query(fact_text):
         "Given the following trivia fact, generate the best possible search query that will yield a relevant, "
         "high-quality image.\n\n"
         "Rules:\n"
-        "- Use 4 to 8 words only.\n"
+        "- Use less than 4 words only.\n"
         "- No punctuation.\n"
-        "- Include only essential descriptors (main subject, key context, proper names if applicable).\n"
-        "- Prioritize actual names or brands from the main idea.\n"
-        "- Add subtle visual hints (e.g. 'photo', 'cinematic still', 'HD').\n"
+        "- Use the main idea of the fact only.\n"
         "- Output only the query string.\n\n"
         "Examples:\n"
-        '"AI smartphone comparison" → "modern smartphone AI technology macro photo"\n'
-        '"K-drama romance" → "Korean drama emotional couple HD still"\n'
-        '"F1 crash" → "Formula 1 car crash track photo"\n\n'
+        '"BTS group sign a contract with HYBE entertainment → "BTS kpop group"\n'
+        '"Did you know battery was made using..." → "=Battery photo"\n'
+        '"Did you know the the first microwave is the F1thV" → "Microwave F1thv"\n\n'
         f"Fact: {fact_text}"
     )    
 
