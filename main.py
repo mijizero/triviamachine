@@ -315,6 +315,7 @@ def generate_image_search_query(fact_text):
         "- Using 4 to 6 words.\n"
         "- Remove all punctuation.\n"
         "- Include only essential descriptors (main subject, key context, proper names if applicable).\n"
+        "- Prioritize Actual names from the main idea.\n"
         "- Output only the query string.\n\n"
         f"Fact: {fact_text}"
     )
@@ -522,8 +523,8 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
         img_url = None
 
         # 🧠 Define Google Custom Search credentials (no env vars)
-        google_api_key = "AIzaSyD-b5S4UejTrmTVTRR8VmtgM5C4s7Y8lCM"
-        google_cx_id = "71d74f6e21e2a4f3d"
+        google_api_key = "AIzaSyCwYPudqi3R_zUSryleHSTRjmtxonc_xn8"
+        google_cx_id = "40eaac5afad3b45af"
 
         # 1️⃣ Image search priority
         if ytdest == "kk":
@@ -566,6 +567,8 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
                                 print("✅ DuckDuckGo fallback used.")
                 except Exception:
                     pass
+             print(f"✅ Image Source: {image_source}")
+             print(f"✅ Image URL: {img_url}
         else:
             # --- Default pipeline: DuckDuckGo first ---
             try:
