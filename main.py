@@ -325,7 +325,7 @@ def generate_image_search_query(fact_text):
     prompt = (
         "You are an expert at creating search queries for image search APIs. "
         "Given the following trivia fact, generate the best possible search query that will yield a relevant, "
-        "high-quality.\n\n"
+        "high-quality image.\n\n"
         "Rules:\n"
         "- Use 4 to 8 words only.\n"
         "- No punctuation.\n"
@@ -336,9 +336,9 @@ def generate_image_search_query(fact_text):
         "Examples:\n"
         '"AI smartphone comparison" → "modern smartphone AI technology macro photo"\n'
         '"K-drama romance" → "Korean drama emotional couple HD still"\n'
-        '"F1 crash" → "Formula 1 car crash track photo"\n\n"
+        '"F1 crash" → "Formula 1 car crash track photo"\n\n'
         f"Fact: {fact_text}"
-    )
+    )    
 
     try:
         if model:
