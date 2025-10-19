@@ -281,7 +281,7 @@ def get_dynamic_fact_JINJA():
 
             elif source == 2:
                 prompt = (
-                    "Give one short, factual and engaging latest news or trivia about kpop idols or groups in 3 sentences. "
+                    "Give one short, factual and engaging latest news or trivia about KPOP groups BTS, BlackPink, Twice, or other famous KPOP groups in 3 sentences. "
                     "The first must start with 'Did you know'. "
                     "The next 2 sentences should give interesting supporting info or context."
                     "The fact should not be the same concept or main idea as any of the entries in the json file at " + json_firestore
