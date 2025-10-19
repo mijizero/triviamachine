@@ -528,6 +528,7 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
         bg_path = os.path.join(tmpdir, "background.jpg")
         valid_image = False
         img_url = None
+        image_source = None  # ✅ added for logging consistency
 
         # 🧠 Define Google Custom Search credentials (no env vars)
         google_api_key = get_secret("GG_API")
@@ -553,6 +554,7 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
                                     for chunk in response.iter_content(8192):
                                         f.write(chunk)
                                 valid_image = True
+                                image_source = "Google Custom Search"
                                 print("✅ Google Custom Search image used.")
             except Exception as e:
                 print("⚠️ Google Custom Search failed:", e)
@@ -571,11 +573,13 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
                                     for chunk in response.iter_content(8192):
                                         f.write(chunk)
                                 valid_image = True
+                                image_source = "DuckDuckGo"
                                 print("✅ DuckDuckGo fallback used.")
                 except Exception:
                     pass
-             print(f"✅ Image Source: {image_source}")
-             print(f"✅ Image URL: {img_url}
+
+            print(f"✅ Image Source: {image_source}")
+            print(f"✅ Image URL: {img_url}")
         else:
             # --- Default pipeline: DuckDuckGo first ---
             try:
@@ -590,6 +594,7 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
                                 for chunk in response.iter_content(8192):
                                     f.write(chunk)
                             valid_image = True
+                            image_source = "DuckDuckGo"
                             print("✅ DuckDuckGo image used.")
             except Exception:
                 pass
@@ -616,6 +621,7 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
                                 for chunk in response.iter_content(8192):
                                     f.write(chunk)
                             valid_image = True
+                            image_source = "Pexels"
                             print("✅ Pexels fallback used.")
             except Exception as e:
                 print("Pexels fallback failed:", e)
@@ -626,6 +632,7 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
             response = requests.get(fallback_url)
             with open(bg_path, "wb") as f:
                 f.write(response.content)
+            image_source = "Fallback"
             print("⚠️ Final fallback image used.")
 
         # --- Resize/crop to 1080x1920 ---
