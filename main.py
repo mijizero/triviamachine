@@ -44,6 +44,13 @@ FACTS_COLLECTION = "facts_history"
 _seen_facts = set()
 _checked_firestore = False  # ensures Firestore is loaded only once per runtime
 
+def get_secret(secret_name):
+    client = secretmanager.SecretManagerServiceClient()
+    project_id = "trivia-machine-472207"
+    response = client.access_secret_version(
+        name=f"projects/{project_id}/secrets/{secret_name}/versions/latest"
+    )
+    return response.payload.data.decode("UTF-8")
 
 def normalize_fact(text: str) -> str:
     """Normalize text for consistent duplicate checking."""
@@ -523,8 +530,8 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
         img_url = None
 
         # 🧠 Define Google Custom Search credentials (no env vars)
-        google_api_key = "AIzaSyCwYPudqi3R_zUSryleHSTRjmtxonc_xn8"
-        google_cx_id = "40eaac5afad3b45af"
+        google_api_key = get_secret("GG_API")
+        google_cx_id = get_secret("GG_CX")
 
         # 1️⃣ Image search priority
         if ytdest == "kk":
