@@ -534,54 +534,34 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
         google_api_key = get_secret("GG_API")
         google_cx_id = get_secret("GG_CX")
 
-        # 1️⃣ Image search priority
-        if ytdest == "kk":
-            # --- Try Google Custom Search first ---
-            try:
-                google_url = (
-                    f"https://www.googleapis.com/customsearch/v1?q={search_query}"
-                    f"&cx={google_cx_id}&key={google_api_key}&searchType=image&num=1"
-                )
-                g_resp = requests.get(google_url, timeout=10)
-                if g_resp.ok:
-                    g_data = g_resp.json()
-                    if "items" in g_data and len(g_data["items"]) > 0:
-                        img_url = g_data["items"][0].get("link")
-                        if img_url:
-                            response = requests.get(img_url, stream=True, timeout=10)
-                            if response.status_code == 200 and "image" in response.headers.get("Content-Type", ""):
-                                with open(bg_path, "wb") as f:
-                                    for chunk in response.iter_content(8192):
-                                        f.write(chunk)
-                                valid_image = True
-                                image_source = "Google Custom Search"
-                                print("✅ Google Custom Search image used.")
-            except Exception as e:
-                print("⚠️ Google Custom Search failed:", e)
+        # Unified image search pipeline for both tech and kk:
+        # 1) Google Custom Search -> 2) DuckDuckGo -> 3) Pexels -> 4) Final fallback
 
-            # --- Fallback to DuckDuckGo if Google fails ---
-            if not valid_image:
-                try:
-                    with DDGS() as ddgs:
-                        results = list(ddgs.images(search_query, max_results=1))
-                    if results:
-                        img_url = results[0].get("image")
-                        if img_url:
-                            response = requests.get(img_url, stream=True, timeout=10)
-                            if response.status_code == 200 and "image" in response.headers.get("Content-Type", ""):
-                                with open(bg_path, "wb") as f:
-                                    for chunk in response.iter_content(8192):
-                                        f.write(chunk)
-                                valid_image = True
-                                image_source = "DuckDuckGo"
-                                print("✅ DuckDuckGo fallback used.")
-                except Exception:
-                    pass
+        # --- 1️⃣ Try Google Custom Search first ---
+        try:
+            google_url = (
+                f"https://www.googleapis.com/customsearch/v1?q={search_query}"
+                f"&cx={google_cx_id}&key={google_api_key}&searchType=image&num=1"
+            )
+            g_resp = requests.get(google_url, timeout=10)
+            if g_resp.ok:
+                g_data = g_resp.json()
+                if "items" in g_data and len(g_data["items"]) > 0:
+                    img_url = g_data["items"][0].get("link")
+                    if img_url:
+                        response = requests.get(img_url, stream=True, timeout=10)
+                        if response.status_code == 200 and "image" in response.headers.get("Content-Type", ""):
+                            with open(bg_path, "wb") as f:
+                                for chunk in response.iter_content(8192):
+                                    f.write(chunk)
+                            valid_image = True
+                            image_source = "Google Custom Search"
+                            print("✅ Google Custom Search image used.")
+        except Exception as e:
+            print("⚠️ Google Custom Search failed:", e)
 
-            print(f"✅ Image Source: {image_source}")
-            print(f"✅ Image URL: {img_url}")
-        else:
-            # --- Default pipeline: DuckDuckGo first ---
+        # --- 2️⃣ Fallback to DuckDuckGo ---
+        if not valid_image:
             try:
                 with DDGS() as ddgs:
                     results = list(ddgs.images(search_query, max_results=1))
@@ -595,11 +575,11 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
                                     f.write(chunk)
                             valid_image = True
                             image_source = "DuckDuckGo"
-                            print("✅ DuckDuckGo image used.")
-            except Exception:
-                pass
+                            print("✅ DuckDuckGo fallback used.")
+            except Exception as e:
+                print("⚠️ DuckDuckGo search failed:", e)
 
-        # 2️⃣ Pexels fallback
+        # --- 3️⃣ Fallback to Pexels ---
         if not valid_image:
             try:
                 simplified_query = search_query.lower()
@@ -626,7 +606,7 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
             except Exception as e:
                 print("Pexels fallback failed:", e)
 
-        # 3️⃣ Final fallback
+        # --- 4️⃣ Final fallback ---
         if not valid_image:
             fallback_url = "https://storage.googleapis.com/trivia-videos-output/background.jpg"
             response = requests.get(fallback_url)
@@ -634,6 +614,10 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
                 f.write(response.content)
             image_source = "Fallback"
             print("⚠️ Final fallback image used.")
+
+        # Log image source + url
+        print(f"✅ Image Source: {image_source}")
+        print(f"✅ Image URL: {img_url}")
 
         # --- Resize/crop to 1080x1920 ---
         target_size = (1080, 1920)
@@ -686,6 +670,7 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
         print("Running Aeneas alignment...")
         text_path = os.path.join(tmpdir, "fact.txt")
         with open(text_path, "w", encoding="utf-8") as f:
+            # Write each page (2 lines) on a separate line for alignment
             for page in pages:
                 f.write(page.replace("\n", " ") + "\n")
 
@@ -698,6 +683,7 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
         ExecuteTask(task).execute()
         task.output_sync_map_file()
 
+        # --- Parse Aeneas output to derive durations and authoritative starts ---
         with open(task.sync_map_file_path_absolute, "r", encoding="utf-8") as f:
             sync_map = json.load(f)
 
@@ -712,30 +698,46 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
                 per_page_durations.append(dur)
                 aeneas_starts.append(start)
             else:
+                # fallback: small duration and start guessed as cumulative so far
                 per_page_durations.append(1.0)
                 aeneas_starts.append(sum(per_page_durations[:-1]))
 
+        # NOTE:
+        # We will trust Aeneas start times (aeneas_starts) as authoritative.
+        # Build video_starts from per_page_durations; if any video_start is earlier
+        # than Aeneas start (i.e., page appears too early), we delay that page by
+        # adding the needed delta to its immediate predecessor duration.
+        # This avoids showing a page before the audio reaches it (fixes last-page-ahead).
+
+        # compute initial video starts
         video_starts = []
         acc = 0.0
         for d in per_page_durations:
             video_starts.append(acc)
             acc += d
 
+        # correction loop: if page i would start earlier than aeneas_starts[i], push it later
         for i in range(1, len(pages)):
             delta = aeneas_starts[i] - video_starts[i]
+            # only adjust if delta is meaningfully positive (page would be early)
             if delta > 0.03:
+                # add delta to immediate predecessor so page i starts later
                 per_page_durations[i - 1] = max(0.05, per_page_durations[i - 1] + delta)
+                # recompute subsequent video_starts
                 video_starts = []
                 acc = 0.0
                 for d in per_page_durations:
                     video_starts.append(acc)
                     acc += d
 
+        # If after corrections the total video sum differs from audio, adjust last clip
         total_video_len = sum(per_page_durations)
         if total_video_len < audio_duration:
             per_page_durations[-1] += (audio_duration - total_video_len)
         elif total_video_len > audio_duration + 0.001 and len(per_page_durations) > 1:
+            # if video too long (should be rare), trim a tiny bit from the last non-zero predecessors
             excess = total_video_len - audio_duration
+            # remove proportionally from earlier clips (but keep min 0.05)
             adjustable_indices = list(range(len(per_page_durations) - 1))
             adj_total = sum(per_page_durations[i] - 0.05 for i in adjustable_indices if per_page_durations[i] > 0.05)
             if adj_total > 0:
@@ -743,11 +745,12 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
                     if per_page_durations[i] > 0.05:
                         take = (per_page_durations[i] - 0.05) / adj_total * excess
                         per_page_durations[i] = max(0.05, per_page_durations[i] - take)
+                # final safety: recompute and adjust last
                 total_video_len = sum(per_page_durations)
                 if total_video_len > audio_duration:
                     per_page_durations[-1] = max(0.05, per_page_durations[-1] - (total_video_len - audio_duration))
 
-        # --- Logo prep ---
+        # --- Prepare logo once (hardcoded GCS path) ---
         logo_resized = None
         try:
             if ytdest == "tech":
@@ -761,9 +764,14 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
                 with open(logo_path, "wb") as lf:
                     lf.write(r.content)
                 logo = Image.open(logo_path).convert("RGBA")
+                
+                # Resize to 50% of original
                 logo_resized = logo.resize((logo.width // 2, logo.height // 2), Image.LANCZOS)
+                
+                # Apply 80% opacity
                 alpha = logo_resized.split()[3].point(lambda p: int(p * 0.8))
                 logo_resized.putalpha(alpha)
+                
                 print(f"✅ Logo loaded, resized to {logo_resized.size} with 80% opacity")
             else:
                 print("⚠️ Logo request returned non-ok status:", r.status_code)
@@ -771,15 +779,19 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
             print("⚠️ Failed to download/prepare logo:", e)
             logo_resized = None
 
-        # --- Page creation ---
+        # --- Page creation synced to Aeneas durations ---
         clips = []
         for i, (page_text, duration) in enumerate(zip(pages, per_page_durations)):
-            page_img = img.copy().convert("RGBA")
+            page_img = img.copy().convert("RGBA")  # Ensure RGBA for transparency
             draw_page = ImageDraw.Draw(page_img)
+        
+            # --- Calculate text position ---
             bbox = draw_page.multiline_textbbox((0, 0), page_text, font=font, spacing=15)
             text_w, text_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
             text_x = (page_img.width - text_w) / 2
             text_y = (page_img.height - text_h) / 2
+        
+            # --- Draw text ---
             draw_page.multiline_text(
                 (text_x, text_y),
                 page_text,
@@ -790,31 +802,54 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
                 stroke_fill="black",
                 align="center"
             )
+        
+            # --- Paste logo above text ---
+            # --- Paste huge logo above text (testing) ---
             if logo_resized is not None:
                 try:
+                    # Resize to 20% of video width
                     target_logo_width = int(page_img.width * 0.24)
                     aspect_ratio = logo_resized.height / logo_resized.width
                     logo = logo_resized.resize(
                         (target_logo_width, int(target_logo_width * aspect_ratio)),
                         Image.LANCZOS
                     )
+            
+                    # Ensure logo is RGBA
                     logo = logo.convert("RGBA")
+            
+                    # Apply  opacity
                     alpha = logo.split()[3].point(lambda p: int(p * 0.23))
                     logo.putalpha(alpha)
+            
+                    # Center horizontally
                     logo_x = (page_img.width - logo.width) // 2
+            
+                    # Fixed Y position (68% down)
                     logo_y = int(page_img.height * 0.63)
+            
+                    # Ensure base image is RGBA
                     page_rgba = page_img.convert("RGBA")
+            
+                    # Paste logo using alpha as mask
                     page_rgba.paste(logo, (logo_x, logo_y), mask=logo)
+            
+                    # Convert back to RGB for final saving
                     page_img = page_rgba.convert("RGB")
-                    print(f"✅ Logo pasted at ({logo_x},{logo_y})")
+            
+                    print(f"✅ Logo pasted with 80% opacity at ({logo_x},{logo_y})")
                 except Exception as e:
                     print(f"⚠️ Failed to paste logo: {e}")
+        
+            # --- Flatten and save ---
             page_img_rgb = page_img.convert("RGB")
             page_path = os.path.join(tmpdir, f"page_{i}.png")
             page_img_rgb.save(page_path)
+        
             clip = ImageClip(page_path).set_duration(duration)
             clips.append(clip)
 
+        # Final safety: ensure last clip covers remaining audio time if tiny diff
         total_video_len = sum(c.duration for c in clips)
         if total_video_len < audio_duration - 1e-3 and len(clips) > 0:
             extra = audio_duration - total_video_len
@@ -823,9 +858,8 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
 
         video_clip = concatenate_videoclips(clips).set_audio(full_audio_clip)
         output_path = os.path.join(tmpdir, "trivia_video.mp4")
-        video_clip.write_videofile(
-            output_path, fps=24, codec="libx264", audio_codec="aac", verbose=False, logger=None
-        )
+        video_clip.write_videofile(output_path, fps=24, codec="libx264",
+                                   audio_codec="aac", verbose=False, logger=None)
 
         gs_url, https_url = upload_to_gcs(output_path, output_gcs_path)
         return gs_url, https_url
