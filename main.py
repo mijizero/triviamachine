@@ -539,15 +539,61 @@ def upload_video_to_youtube_gcs(gcs_path, title, description, category, source_c
         print("ERROR in YouTube upload:",str(e))
         raise
 
-# -------------------------------
-# Core: Create Video with Text
-# -------------------------------
+
 from difflib import SequenceMatcher
 
 def is_similar(a, b, threshold=0.8):
     """Returns True if two strings are semantically similar."""
     return SequenceMatcher(None, a.lower(), b.lower()).ratio() > threshold
 
+# -------------------------------
+# Gemini Image Fetch (Priority)
+# -------------------------------
+def fetch_image_with_gemini(fact_text):
+    """
+    Uses Gemini to analyze the fact and return the most suitable image link.
+    Gemini may directly provide a valid image URL or a refined search query.
+    Returns (img_url, source_label) or (None, None) on failure.
+    """
+    try:
+        model = GenerativeModel("gemini-2.5-flash")
+        prompt = f"""
+        You are a media content assistant for an automated video system.
+        Based on the following trivia fact, find a *publicly accessible* image link 
+        (from reliable sources like Wikimedia, Unsplash, Pexels, or news sites)
+        that best represents the main idea.
+
+        - Return ONLY a direct image URL (ending with .jpg, .jpeg, .png, .webp)
+        - If you can't find a link, return a 3–5 word search query instead.
+        - Prefer vertical or portrait-oriented visuals if possible.
+        - Do not include markdown, explanations, or brackets.
+
+        Fact:
+        {fact_text}
+        """
+
+        response = model.generate_content(prompt)
+        if not response or not getattr(response, "text", None):
+            return None, None
+
+        result = response.text.strip()
+        # Validate if it's a URL
+        if re.match(r"^https?://.*\.(jpg|jpeg|png|webp)$", result, re.IGNORECASE):
+            print(f"🧠 Gemini returned direct image: {result}")
+            return result, "Gemini Direct"
+
+        # If not a URL, treat as refined query (fallback handled later)
+        print(f"🧠 Gemini returned search term: {result}")
+        return None, None
+
+    except Exception as e:
+        print(f"⚠️ Gemini image fetch failed: {e}")
+        return None, None
+
+
+# -------------------------------
+# Core: Create Video with Text
+# -------------------------------
 def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-output/output.mp4"):
     with tempfile.TemporaryDirectory() as tmpdir:
         fact_text = fact_text.replace("*", "").strip()
@@ -571,18 +617,52 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
         google_cx_id = get_secret("GG_CX")
 
         try:
-            # --- 1️⃣ Try Google Custom Search first ---
+            # --- 🧠 1️⃣ Gemini (Primary Source) ---
             try:
-                google_url = (
-                    f"https://www.googleapis.com/customsearch/v1"
-                    f"?q={search_query}&cx={google_cx_id}&key={google_api_key}"
-                    f"&searchType=image&num=1&imgType=photo&imgSize=large&safe=medium"
-                )
-                g_resp = requests.get(google_url, timeout=10)
-                if g_resp.ok:
-                    g_data = g_resp.json()
-                    if "items" in g_data and len(g_data["items"]) > 0:
-                        img_url = g_data["items"][0].get("link")
+                img_url, image_source = fetch_image_with_gemini(fact_text)
+                if img_url:
+                    response = requests.get(img_url, stream=True, timeout=10)
+                    if response.status_code == 200 and "image" in response.headers.get("Content-Type", ""):
+                        with open(bg_path, "wb") as f:
+                            for chunk in response.iter_content(8192):
+                                f.write(chunk)
+                        valid_image = True
+                        print(f"[{ytdest.upper()}] ✅ Gemini image used: {img_url}")
+            except Exception as e:
+                print(f"[{ytdest.upper()}] ⚠️ Gemini image fetch failed: {e}")
+
+            # --- 2️⃣ Google Custom Search ---
+            if not valid_image:
+                try:
+                    google_url = (
+                        f"https://www.googleapis.com/customsearch/v1"
+                        f"?q={search_query}&cx={google_cx_id}&key={google_api_key}"
+                        f"&searchType=image&num=1&imgType=photo&imgSize=large&safe=medium"
+                    )
+                    g_resp = requests.get(google_url, timeout=10)
+                    if g_resp.ok:
+                        g_data = g_resp.json()
+                        if "items" in g_data and len(g_data["items"]) > 0:
+                            img_url = g_data["items"][0].get("link")
+                            if img_url:
+                                response = requests.get(img_url, stream=True, timeout=10)
+                                if response.status_code == 200 and "image" in response.headers.get("Content-Type", ""):
+                                    with open(bg_path, "wb") as f:
+                                        for chunk in response.iter_content(8192):
+                                            f.write(chunk)
+                                    valid_image = True
+                                    image_source = "Google Custom Search"
+                                    print(f"[{ytdest.upper()}] ✅ Google image used: {img_url}")
+                except Exception as e:
+                    print(f"[{ytdest.upper()}] ⚠️ Google Custom Search failed:", e)
+
+            # --- 3️⃣ DuckDuckGo ---
+            if not valid_image:
+                try:
+                    with DDGS() as ddgs:
+                        results = list(ddgs.images(search_query, max_results=1))
+                    if results:
+                        img_url = results[0].get("image")
                         if img_url:
                             response = requests.get(img_url, stream=True, timeout=10)
                             if response.status_code == 200 and "image" in response.headers.get("Content-Type", ""):
@@ -590,12 +670,12 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
                                     for chunk in response.iter_content(8192):
                                         f.write(chunk)
                                 valid_image = True
-                                image_source = "Google Custom Search"
-                                print(f"[{ytdest.upper()}] ✅ Google image used: {img_url}")
-            except Exception as e:
-                print(f"[{ytdest.upper()}] ⚠️ Google Custom Search failed:", e)
+                                image_source = "DuckDuckGo"
+                                print(f"[{ytdest.upper()}] ✅ DuckDuckGo image used: {img_url}")
+                except Exception as e:
+                    print(f"[{ytdest.upper()}] ⚠️ DuckDuckGo search failed:", e)
 
-            # --- 2️⃣ Fallback to Pexels (prioritized aesthetic source) ---
+            # --- 4️⃣ Pexels ---
             if not valid_image:
                 try:
                     simplified_query = search_query.lower()
@@ -622,26 +702,7 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
                 except Exception as e:
                     print(f"[{ytdest.upper()}] ⚠️ Pexels fallback failed:", e)
 
-            # --- 3️⃣ Fallback to DuckDuckGo (broad coverage) ---
-            if not valid_image:
-                try:
-                    with DDGS() as ddgs:
-                        results = list(ddgs.images(search_query, max_results=1))
-                    if results:
-                        img_url = results[0].get("image")
-                        if img_url:
-                            response = requests.get(img_url, stream=True, timeout=10)
-                            if response.status_code == 200 and "image" in response.headers.get("Content-Type", ""):
-                                with open(bg_path, "wb") as f:
-                                    for chunk in response.iter_content(8192):
-                                        f.write(chunk)
-                                valid_image = True
-                                image_source = "DuckDuckGo"
-                                print(f"[{ytdest.upper()}] ✅ DuckDuckGo image used: {img_url}")
-                except Exception as e:
-                    print(f"[{ytdest.upper()}] ⚠️ DuckDuckGo search failed:", e)
-
-            # --- 4️⃣ Final fallback ---
+            # --- 5️⃣ Final fallback ---
             if not valid_image:
                 fallback_url = "https://storage.googleapis.com/trivia-videos-output/background.jpg"
                 response = requests.get(fallback_url)
