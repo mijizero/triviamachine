@@ -685,6 +685,94 @@ Fact:
     return None
 
 
+from vertexai.preview import generative_models
+import vertexai
+import requests
+import tempfile
+import os
+import re
+import time
+
+
+# --- Helper: Categorize tech topic ---
+def detect_tech_category(fact_text: str) -> str:
+    """Roughly classify the fact to adjust the Gemini prompt style."""
+    text = fact_text.lower()
+
+    # Check for known product or brand cues
+    if any(x in text for x in ["iphone", "macbook", "samsung", "xiaomi", "laptop", "camera", "headphones", "gpu", "processor", "chip", "gadget"]):
+        return "product"
+
+    # Apps or software tools
+    if any(x in text for x in ["app", "software", "android", "ios", "windows", "chrome", "facebook", "tiktok", "instagram", "youtube", "browser"]):
+        return "app"
+
+    # Broader tech or futuristic concepts
+    if any(x in text for x in ["ai", "artificial intelligence", "quantum", "robot", "blockchain", "server", "data", "cloud", "internet", "virtual reality"]):
+        return "concept"
+
+    return "generic"
+
+
+# --- Helper: Generate tech-themed image using Gemini ---
+def generate_gemini_tech_image(fact_text, tmpdir, max_retries=5):
+    """Generate a relevant tech/product/app image using Gemini (Vertex AI)."""
+    vertexai.init(project="YOUR_GCP_PROJECT_ID", location="us-central1")
+
+    category = detect_tech_category(fact_text)
+
+    # Adaptive prompt selection
+    if category == "product":
+        prompt = (
+            f"Generate a cinematic, high-quality product photo of the gadget, device, or hardware described below. "
+            f"The image should show the actual object clearly, on a soft studio background, with professional lighting. "
+            f"No humans, no text overlay. "
+            f"Topic: {fact_text}"
+        )
+
+    elif category == "app":
+        prompt = (
+            f"Generate a clean, modern digital illustration representing the app, software, or user interface described below. "
+            f"Show screens or logos in a realistic digital setting (e.g., phone screen or floating UI panels). "
+            f"No text, no branding duplication. "
+            f"Topic: {fact_text}"
+        )
+
+    elif category == "concept":
+        prompt = (
+            f"Generate a futuristic visual concept representing the technology or innovation mentioned below. "
+            f"Style should be sleek, cinematic, and modern — suitable for tech explainer video background. "
+            f"No text or human subjects. "
+            f"Topic: {fact_text}"
+        )
+
+    else:
+        prompt = (
+            f"Generate a clean, realistic image representing a technology-related fact or object described below. "
+            f"Focus on visual clarity, modern lighting, and depth of field. "
+            f"No humans, no text overlay. "
+            f"Topic: {fact_text}"
+        )
+
+    model = generative_models.GenerativeModel("gemini-1.5-flash")
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = model.generate_images(prompt=prompt, number_of_images=1)
+            if response and response.generated_images:
+                image_data = response.generated_images[0].image_bytes
+                bg_path = os.path.join(tmpdir, f"tech_bg_{attempt}.jpg")
+                with open(bg_path, "wb") as f:
+                    f.write(image_data)
+                print(f"[TECH] ✅ Gemini generated tech image ({category}) on attempt {attempt}")
+                return bg_path
+        except Exception as e:
+            print(f"[TECH] ⚠️ Gemini attempt {attempt} failed: {e}")
+            time.sleep(2)
+
+    raise RuntimeError(f"[TECH] Gemini failed to generate a valid tech image after {max_retries} attempts.")
+
+
 # -------------------------------
 # Core: Create Video with Text (Gemini-only image source)
 # -------------------------------
@@ -694,33 +782,38 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
 
         bg_path = os.path.join(tmpdir, "background.jpg")
         valid_image = False
-        img_url = None
 
         try:
-            print(f"[{ytdest.upper()}] 🧠 Fetching image using Gemini only...")
-            img_url = fetch_valid_image_with_gemini(fact_text, max_retries=30)
+            if ytdest.lower() == "tech":
+                print(f"[{ytdest.upper()}] 🧠 Generating tech image with Gemini (adaptive mode)...")
+                bg_path = generate_gemini_tech_image(fact_text, tmpdir)
+                valid_image = True
 
-            if img_url:
-                resp = requests.get(img_url, stream=True, timeout=20)
-                if resp.status_code == 200 and "image" in resp.headers.get("Content-Type", "").lower():
-                    with open(bg_path, "wb") as f:
-                        for chunk in resp.iter_content(8192):
-                            if chunk:
-                                f.write(chunk)
-                    valid_image = True
-                    print(f"[{ytdest.upper()}] ✅ Image downloaded and saved: {img_url}")
-                else:
-                    print(f"[{ytdest.upper()}] ⚠️ Final GET failed: status={getattr(resp,'status_code',None)}, ctype={resp.headers.get('Content-Type')}")
-                    resp.close()
+            elif ytdest.lower() == "kk":
+                print(f"[{ytdest.upper()}] 🧠 Fetching image using DuckDuckGo or Google Custom Search...")
+                img_url = fetch_valid_image_with_gemini(fact_text, max_retries=30)
+                if img_url:
+                    resp = requests.get(img_url, stream=True, timeout=20)
+                    if resp.status_code == 200 and "image" in resp.headers.get("Content-Type", "").lower():
+                        with open(bg_path, "wb") as f:
+                            for chunk in resp.iter_content(8192):
+                                if chunk:
+                                    f.write(chunk)
+                        valid_image = True
+                        print(f"[{ytdest.upper()}] ✅ Image downloaded: {img_url}")
+                    else:
+                        print(f"[{ytdest.upper()}] ⚠️ Final GET failed: status={resp.status_code}")
+                        resp.close()
 
             if not valid_image:
-                # strictly per your request, no fallbacks — raise here
-                raise RuntimeError("Gemini failed to produce a valid image after 30 attempts.")
+                raise RuntimeError(f"{ytdest.upper()} failed to produce a valid background image.")
 
         except Exception as e:
-            print(f"[{ytdest.upper()}] 🔥 Gemini image fetch failed: {e}")
-            # re-raise so upstream continues to see failure as before
+            print(f"[{ytdest.upper()}] 🔥 Image creation failed: {e}")
             raise
+
+        print(f"[{ytdest.upper()}] 🖼️ Background image ready → {bg_path}")
+        return bg_path
 
         # --- Resize/crop to 1080x1920 ---
         target_size = (1080, 1920)
