@@ -717,7 +717,7 @@ def detect_tech_category(fact_text: str) -> str:
 # --- Helper: Generate tech-themed image using Gemini ---
 def generate_gemini_tech_image(fact_text, tmpdir, max_retries=5):
     """Generate a relevant tech/product/app image using Gemini (Vertex AI)."""
-    vertexai.init(project="YOUR_GCP_PROJECT_ID", location="us-central1")
+    vertexai.init(project="trivia-machine-472207", location="us-central1")
 
     category = detect_tech_category(fact_text)
 
