@@ -577,7 +577,7 @@ Given the fact below, return ONLY ONE direct image URL (no markdown, no commenta
 Requirements:
 - The URL must be a direct image link that ends with .jpg, .jpeg, .png, or .webp.
 - Prefer vertical/portrait images when available.
-- Prefer images from publicly accessible, reliable domains (Wikimedia, Unsplash, Pexels, official press photos, reputable news sites).
+- Prefer images from publicly accessible, reliable domains (google images, twitter/X, pinterest, official press photos, reputable news sites).
 - Do NOT return short links (bit.ly, t.co). Return the full URL.
 - Do NOT include any other text, explanation, or punctuation — only the single URL on one line.
 
