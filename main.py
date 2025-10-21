@@ -692,7 +692,7 @@ import tempfile
 import os
 import re
 import time
-
+from vertexai.preview.vision_models import ImageGenerationModel
 
 # --- Helper: Categorize tech topic ---
 def detect_tech_category(fact_text: str) -> str:
@@ -719,7 +719,7 @@ def detect_tech_category(fact_text: str) -> str:
 def generate_gemini_tech_image(fact_text, tmpdir, max_retries=5):
     """Generate a relevant tech/product/app image using Gemini (Vertex AI)."""
     vertexai.init(project="trivia-machine-472207", location="us-central1")
-
+    model = GenerativeModel("gemini-2.5-flash")
     category = detect_tech_category(fact_text)
 
     # Adaptive prompt selection
@@ -752,8 +752,6 @@ def generate_gemini_tech_image(fact_text, tmpdir, max_retries=5):
             f"Topic: {fact_text}"
         )
 
-    from vertexai.preview.vision_models import ImageGenerationModel
-     model = GenerativeModel("gemini-2.5-flash")
 
     for attempt in range(1, max_retries + 1):
         try:
