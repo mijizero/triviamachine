@@ -753,24 +753,29 @@ def generate_gemini_tech_image(fact_text, tmpdir, max_retries=5):
         )
 
     from vertexai.preview.vision_models import ImageGenerationModel
-    model = ImageGenerationModel.from_pretrained("imagen-3.0-fast")
+     model = GenerativeModel("gemini-2.5-flash")
 
     for attempt in range(1, max_retries + 1):
         try:
-            response = model.generate_images(prompt=prompt, number_of_images=1)
-            if response and response.images:
-                image_data = response.images[0]._image_bytes  # Raw bytes
-                bg_path = os.path.join(tmpdir, f"tech_bg_{attempt}.jpg")
-                with open(bg_path, "wb") as f:
-                    f.write(image_data)
-                print(f"[TECH] ✅ Gemini generated tech image ({category}) on attempt {attempt}")
-                return bg_path
+            print(f"[TECH] 🧠 Gemini image generation attempt {attempt} ({category})...")
+            response = model.generate_content(
+                [prompt],
+                generation_config={"response_mime_type": "image/png"},
+            )
+            image_data = response.candidates[0].content.parts[0].data
+            bg_path = os.path.join(tmpdir, f"tech_bg_{attempt}.png")
+
+            with open(bg_path, "wb") as f:
+                f.write(image_data)
+
+            print(f"[TECH] ✅ Gemini generated tech image ({category}) on attempt {attempt}")
+            return bg_path
+
         except Exception as e:
             print(f"[TECH] ⚠️ Gemini attempt {attempt} failed: {e}")
             time.sleep(2)
 
     raise RuntimeError(f"[TECH] Gemini failed to generate a valid tech image after {max_retries} attempts.")
-
 # -------------------------------
 # Core: Create Video with Text (Gemini-only image source)
 # -------------------------------
