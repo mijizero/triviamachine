@@ -715,6 +715,7 @@ def detect_tech_category(fact_text: str) -> str:
 
 
 # --- Helper: Generate tech-themed image using Gemini ---
+# --- Helper: Generate tech-themed image using Gemini ---
 def generate_gemini_tech_image(fact_text, tmpdir, max_retries=5):
     """Generate a relevant tech/product/app image using Gemini (Vertex AI)."""
     vertexai.init(project="trivia-machine-472207", location="us-central1")
@@ -724,43 +725,41 @@ def generate_gemini_tech_image(fact_text, tmpdir, max_retries=5):
     # Adaptive prompt selection
     if category == "product":
         prompt = (
-            f"Generate a cinematic, high-quality product photo of the gadget, device, or hardware described below. "
-            f"The image should show the actual object clearly, on a soft studio background, with professional lighting. "
+            f"Create a cinematic, high-quality product photo of the gadget, device, or hardware described below. "
+            f"The image should show the object clearly, on a soft studio background with professional lighting. "
             f"No humans, no text overlay. "
             f"Topic: {fact_text}"
         )
-
     elif category == "app":
         prompt = (
-            f"Generate a clean, modern digital illustration representing the app, software, or user interface described below. "
+            f"Create a clean, modern digital illustration representing the app, software, or user interface described below. "
             f"Show screens or logos in a realistic digital setting (e.g., phone screen or floating UI panels). "
             f"No text, no branding duplication. "
             f"Topic: {fact_text}"
         )
-
     elif category == "concept":
         prompt = (
-            f"Generate a futuristic visual concept representing the technology or innovation mentioned below. "
+            f"Create a futuristic concept image representing the technology or innovation mentioned below. "
             f"Style should be sleek, cinematic, and modern — suitable for tech explainer video background. "
             f"No text or human subjects. "
             f"Topic: {fact_text}"
         )
-
     else:
         prompt = (
-            f"Generate a clean, realistic image representing a technology-related fact or object described below. "
+            f"Create a clean, realistic image representing a technology-related fact or object described below. "
             f"Focus on visual clarity, modern lighting, and depth of field. "
             f"No humans, no text overlay. "
             f"Topic: {fact_text}"
         )
 
-    model = generative_models.GenerativeModel("gemini-1.5-flash")
+    from vertexai.preview.vision_models import ImageGenerationModel
+    model = ImageGenerationModel.from_pretrained("imagen-3.0-fast")
 
     for attempt in range(1, max_retries + 1):
         try:
             response = model.generate_images(prompt=prompt, number_of_images=1)
-            if response and response.generated_images:
-                image_data = response.generated_images[0].image_bytes
+            if response and response.images:
+                image_data = response.images[0]._image_bytes  # Raw bytes
                 bg_path = os.path.join(tmpdir, f"tech_bg_{attempt}.jpg")
                 with open(bg_path, "wb") as f:
                     f.write(image_data)
@@ -771,7 +770,6 @@ def generate_gemini_tech_image(fact_text, tmpdir, max_retries=5):
             time.sleep(2)
 
     raise RuntimeError(f"[TECH] Gemini failed to generate a valid tech image after {max_retries} attempts.")
-
 
 # -------------------------------
 # Core: Create Video with Text (Gemini-only image source)
