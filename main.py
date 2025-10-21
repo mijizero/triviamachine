@@ -549,63 +549,142 @@ def is_similar(a, b, threshold=0.8):
 # -------------------------------
 # Gemini-only Image Fetch
 # -------------------------------
-def fetch_valid_image_with_gemini(fact_text, max_retries=30):
+def fetch_valid_image_with_gemini(fact_text, max_retries=30, timeout_head=10):
     """
     Uses Gemini as the sole image fetcher.
-    Keeps retrying until Gemini returns a valid direct image URL.
-    A valid URL is one that:
-      - Starts with http/https
-      - Ends with .jpg/.jpeg/.png/.webp
-      - Returns 200 and has image/* content type
+    Keeps retrying until Gemini returns a valid direct image URL or max_retries reached.
+
+    Validation performed by runtime:
+      - URL starts with http/https
+      - URL ends with .jpg/.jpeg/.png/.webp (case-insensitive)
+      - HEAD request returns 200 and Content-Type contains "image"
+      - If HEAD returns 405 or 501 (some servers disallow HEAD), try a lightweight GET with stream=True and read minimal bytes.
+
+    Returns the validated image URL string, or None if not found.
     """
     model = GenerativeModel("gemini-2.5-flash")
 
+    # Trusted domain hint — Gemini should prefer these but it's not enforced by runtime
+    trusted_domains_hint = (
+        "Prefer images hosted on reliable public domains such as "
+        "wikimedia.org, commons.wikimedia.org, unsplash.com, pexels.com, images.unsplash.com, "
+        "or reputable news / official sources."
+    )
+
+    base_prompt = f"""
+You are a visual retrieval agent for an automated trivia video system.
+Given the fact below, return ONLY ONE direct image URL (no markdown, no commentary).
+Requirements:
+- The URL must be a direct image link that ends with .jpg, .jpeg, .png, or .webp.
+- Prefer vertical/portrait images when available.
+- Prefer images from publicly accessible, reliable domains (Wikimedia, Unsplash, Pexels, official press photos, reputable news sites).
+- Do NOT return short links (bit.ly, t.co). Return the full URL.
+- Do NOT include any other text, explanation, or punctuation — only the single URL on one line.
+
+{trusted_domains_hint}
+
+Fact:
+{fact_text}
+    """.strip()
+
     for attempt in range(1, max_retries + 1):
         try:
-            prompt = f"""
-            You are a visual retrieval agent for an automated trivia video system.
-            Based on the fact below, return ONLY ONE direct image URL (ending in .jpg, .jpeg, .png, or .webp)
-            that best represents the main idea.
+            # Ask Gemini for a direct image URL
+            response = model.generate_content(base_prompt)
 
-            Rules:
-            - Must be a *direct* public image link (no markdown, no HTML, no text)
-            - Must be from a safe, public, and reliable domain (e.g. Wikimedia, Unsplash, Pexels, etc.)
-            - Do not include explanations or text.
-            - If you are unsure, still pick the most relevant image that visually represents the fact.
+            # Extract text if present
+            candidate = None
+            if response and getattr(response, "text", None):
+                candidate = response.text.strip()
+            else:
+                # Some response shapes may have candidates; try to extract text parts robustly
+                try:
+                    # attempt to read candidates if available
+                    for cand in getattr(response, "candidates", []) or []:
+                        for part in getattr(cand, "content", {}).get("parts", []) or []:
+                            text_part = getattr(part, "text", None)
+                            if text_part:
+                                candidate = text_part.strip()
+                                break
+                        if candidate:
+                            break
+                except Exception:
+                    candidate = None
 
-            Fact:
-            {fact_text}
-            """
-
-            response = model.generate_content(prompt)
-            if not response or not getattr(response, "text", None):
-                print(f"⚠️ [Gemini attempt {attempt}] No response text, retrying...")
+            if not candidate:
+                print(f"⚠️ [Gemini attempt {attempt}] Empty response — retrying...")
                 continue
 
-            candidate = response.text.strip()
-            # Validate URL pattern
-            if not re.match(r"^https?://.*\.(jpg|jpeg|png|webp)$", candidate, re.IGNORECASE):
-                print(f"⚠️ [Gemini attempt {attempt}] Not a valid image URL: {candidate}")
+            # Take only the first line (some responses may include extra newlines)
+            candidate = candidate.splitlines()[0].strip()
+
+            # Quick pattern check
+            if not re.match(r"^https?://", candidate, re.IGNORECASE):
+                print(f"⚠️ [Gemini attempt {attempt}] Not an http/https URL: {candidate!r}")
+                continue
+            if not re.search(r"\.(jpg|jpeg|png|webp)(?:\?.*)?$", candidate, re.IGNORECASE):
+                print(f"⚠️ [Gemini attempt {attempt}] URL does not end with an image extension: {candidate!r}")
                 continue
 
-            # Validate accessibility
-            resp = requests.head(candidate, timeout=10)
-            if resp.status_code == 200 and "image" in resp.headers.get("Content-Type", "").lower():
-                print(f"✅ [Gemini attempt {attempt}] Valid image URL confirmed: {candidate}")
-                return candidate
+            # Perform HTTP HEAD to validate content-type and status
+            try:
+                head = requests.head(candidate, allow_redirects=True, timeout=timeout_head)
+            except requests.RequestException as e:
+                # Some servers don't support HEAD; we'll try a small GET as fallback check below
+                head = None
+                head_err = e
 
-            print(f"⚠️ [Gemini attempt {attempt}] Invalid or inaccessible image: {candidate}")
+            if head is not None:
+                status = getattr(head, "status_code", None)
+                ctype = head.headers.get("Content-Type", "") if head.headers else ""
+                if status == 200 and ctype and "image" in ctype.lower():
+                    print(f"✅ [Gemini attempt {attempt}] Valid image URL confirmed via HEAD: {candidate}")
+                    return candidate
+                # If HEAD returned 200 but content-type missing, we may still try GET below
+                if status is not None and status >= 400:
+                    print(f"⚠️ [Gemini attempt {attempt}] HEAD returned status {status} for {candidate!r}")
+                else:
+                    print(f"⚠️ [Gemini attempt {attempt}] HEAD content-type: {ctype!r} for {candidate!r}")
+
+            # If HEAD not usable or inconclusive, try lightweight GET
+            try:
+                get_resp = requests.get(candidate, stream=True, allow_redirects=True, timeout=timeout_head)
+                status = getattr(get_resp, "status_code", None)
+                ctype = get_resp.headers.get("Content-Type", "") if get_resp.headers else ""
+                if status == 200 and ctype and "image" in ctype.lower():
+                    # read a small chunk to be sure (and then close)
+                    try:
+                        next(get_resp.iter_content(1024))
+                    except StopIteration:
+                        # no content
+                        print(f"⚠️ [Gemini attempt {attempt}] GET returned empty body for {candidate!r}")
+                        get_resp.close()
+                        continue
+                    get_resp.close()
+                    print(f"✅ [Gemini attempt {attempt}] Valid image URL confirmed via GET: {candidate}")
+                    return candidate
+                else:
+                    print(f"⚠️ [Gemini attempt {attempt}] GET status {status}, content-type {ctype!r} for {candidate!r}")
+                    try:
+                        get_resp.close()
+                    except Exception:
+                        pass
+            except requests.RequestException as e_get:
+                # network/connectivity error for this candidate
+                print(f"⚠️ [Gemini attempt {attempt}] GET request failed: {e_get}")
+
+            # If we reach here, candidate failed validation
+            print(f"⚠️ [Gemini attempt {attempt}] Candidate failed validation: {candidate!r}")
+            # continue to next attempt
 
         except Exception as e:
-            print(f"⚠️ [Gemini attempt {attempt}] Exception: {e}")
+            print(f"⚠️ [Gemini attempt {attempt}] Exception while asking Gemini: {e}")
 
+    # exhausted attempts
     print(f"❌ Gemini failed to produce a valid image after {max_retries} attempts.")
     return None
 
 
-# -------------------------------
-# Core: Create Video with Text
-# -------------------------------
 # -------------------------------
 # Core: Create Video with Text (Gemini-only image source)
 # -------------------------------
@@ -619,24 +698,29 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
 
         try:
             print(f"[{ytdest.upper()}] 🧠 Fetching image using Gemini only...")
-            img_url = fetch_valid_image_with_gemini(fact_text)
+            img_url = fetch_valid_image_with_gemini(fact_text, max_retries=30)
 
             if img_url:
-                resp = requests.get(img_url, stream=True, timeout=15)
-                if resp.status_code == 200 and "image" in resp.headers.get("Content-Type", ""):
+                resp = requests.get(img_url, stream=True, timeout=20)
+                if resp.status_code == 200 and "image" in resp.headers.get("Content-Type", "").lower():
                     with open(bg_path, "wb") as f:
                         for chunk in resp.iter_content(8192):
-                            f.write(chunk)
+                            if chunk:
+                                f.write(chunk)
                     valid_image = True
-                    print(f"[{ytdest.upper()}] ✅ Image saved: {img_url}")
+                    print(f"[{ytdest.upper()}] ✅ Image downloaded and saved: {img_url}")
+                else:
+                    print(f"[{ytdest.upper()}] ⚠️ Final GET failed: status={getattr(resp,'status_code',None)}, ctype={resp.headers.get('Content-Type')}")
+                    resp.close()
 
             if not valid_image:
+                # strictly per your request, no fallbacks — raise here
                 raise RuntimeError("Gemini failed to produce a valid image after 30 attempts.")
 
         except Exception as e:
             print(f"[{ytdest.upper()}] 🔥 Gemini image fetch failed: {e}")
+            # re-raise so upstream continues to see failure as before
             raise
-
 
         # --- Resize/crop to 1080x1920 ---
         target_size = (1080, 1920)
