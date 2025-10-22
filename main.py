@@ -372,6 +372,23 @@ def generate_image_search_query(fact_text):
         print(f"🪄 Fallback Search Query: {fallback_query}")
         return fallback_query
 
+def extract_search_query(fact_text):
+    fact_clean = fact_text.replace("Did you know", "").replace("did you know", "").replace("?", "").strip()
+    model = GenerativeModel("gemini-2.5-flash")
+    prompt = (
+        "From the following trivia fact, extract only the main subject or topic "
+        "that best represents the visual focus for an image search. "
+        "Return only the concise keyword or phrase, without extra words or punctuation.\n\n"
+        f"Fact: {fact_clean}"
+    )
+    try:
+        response = model.generate_content(prompt)
+        text = response.text.strip() if response and response.text else ""
+        if len(text.split()) > 6:
+            text = " ".join(fact_clean.split()[:5])
+        return text or fact_clean
+    except Exception:
+        return fact_clean
 # -------------------------------
 # Helpers
 # -------------------------------
