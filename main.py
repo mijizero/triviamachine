@@ -715,65 +715,81 @@ def detect_tech_category(fact_text: str) -> str:
 
 
 # --- Helper: Generate tech-themed image using Gemini ---
-# --- Helper: Generate tech-themed image using Gemini ---
-def generate_gemini_tech_image(fact_text, tmpdir, max_retries=5):
-    """Generate a relevant tech/product/app image using Gemini (Vertex AI)."""
-    vertexai.init(project="trivia-machine-472207", location="us-central1")
-    model = GenerativeModel("gemini-2.5-flash")
-    category = detect_tech_category(fact_text)
+from vertexai.preview.vision_models import ImageGenerationModel
+import vertexai
+import os
+import time
 
-    # Adaptive prompt selection
+def generate_gemini_tech_image(fact_text, tmpdir, max_retries=5):
+    """
+    Generate a relevant tech/product/app image using Google's Imagen model via Vertex AI.
+    This follows the officially documented method (no 'response_mime_type' hack).
+    """
+    vertexai.init(project="trivia-machine-472207", location="us-central1")
+    model = ImageGenerationModel.from_pretrained("imagen-3.0-generate-002")
+
+    # --- Categorize tech topic ---
+    text = fact_text.lower()
+    if any(x in text for x in ["iphone", "macbook", "samsung", "camera", "laptop", "gpu", "chip", "gadget"]):
+        category = "product"
+    elif any(x in text for x in ["app", "software", "android", "ios", "windows", "tiktok", "instagram", "facebook"]):
+        category = "app"
+    elif any(x in text for x in ["ai", "robot", "blockchain", "quantum", "server", "cloud", "internet"]):
+        category = "concept"
+    else:
+        category = "generic"
+
+    # --- Dynamic prompt ---
     if category == "product":
         prompt = (
-            f"Create a cinematic, high-quality product photo of the gadget, device, or hardware described below. "
-            f"The image should show the object clearly, on a soft studio background with professional lighting. "
-            f"No humans, no text overlay. "
-            f"Topic: {fact_text}"
+            f"High-quality cinematic studio photo of the gadget, device, or hardware described below. "
+            f"Professional lighting, clear object view, soft neutral background. "
+            f"No humans or text. Topic: {fact_text}"
         )
     elif category == "app":
         prompt = (
-            f"Create a clean, modern digital illustration representing the app, software, or user interface described below. "
-            f"Show screens or logos in a realistic digital setting (e.g., phone screen or floating UI panels). "
-            f"No text, no branding duplication. "
-            f"Topic: {fact_text}"
+            f"Modern, realistic digital illustration representing the app or software interface described below. "
+            f"Show screens, panels, or icons in a clean 3D or digital environment. "
+            f"No logos or text overlays. Topic: {fact_text}"
         )
     elif category == "concept":
         prompt = (
-            f"Create a futuristic concept image representing the technology or innovation mentioned below. "
-            f"Style should be sleek, cinematic, and modern — suitable for tech explainer video background. "
-            f"No text or human subjects. "
-            f"Topic: {fact_text}"
+            f"Futuristic concept art representing the technology or innovation mentioned below. "
+            f"Sleek, cinematic, modern style. No humans or text. Topic: {fact_text}"
         )
     else:
         prompt = (
-            f"Create a clean, realistic image representing a technology-related fact or object described below. "
-            f"Focus on visual clarity, modern lighting, and depth of field. "
-            f"No humans, no text overlay. "
-            f"Topic: {fact_text}"
+            f"Clean, realistic image representing a technology-related object or idea described below. "
+            f"Modern lighting and depth of field. No humans or text. Topic: {fact_text}"
         )
 
-
+    # --- Generate with retry ---
     for attempt in range(1, max_retries + 1):
         try:
-            print(f"[TECH] 🧠 Gemini image generation attempt {attempt} ({category})...")
-            response = model.generate_content(
-                [prompt],
-                generation_config={"response_mime_type": "image/png"},
+            print(f"[TECH] 🧠 Imagen (Gemini) attempt {attempt} for category: {category}")
+            response = model.generate_images(
+                prompt=prompt,
+                number_of_images=1,
+                aspect_ratio="16:9"
             )
-            image_data = response.candidates[0].content.parts[0].data
-            bg_path = os.path.join(tmpdir, f"tech_bg_{attempt}.png")
 
-            with open(bg_path, "wb") as f:
-                f.write(image_data)
+            if response and response.images:
+                image_bytes = response.images[0]._image_bytes  # officially returned raw bytes
+                bg_path = os.path.join(tmpdir, f"tech_bg_{attempt}.jpg")
 
-            print(f"[TECH] ✅ Gemini generated tech image ({category}) on attempt {attempt}")
-            return bg_path
+                with open(bg_path, "wb") as f:
+                    f.write(image_bytes)
 
+                print(f"[TECH] ✅ Gemini Imagen generated tech image ({category}) on attempt {attempt}")
+                return bg_path
+            else:
+                print(f"[TECH] ⚠️ Imagen returned no images on attempt {attempt}")
         except Exception as e:
-            print(f"[TECH] ⚠️ Gemini attempt {attempt} failed: {e}")
+            print(f"[TECH] ⚠️ Gemini Imagen attempt {attempt} failed: {e}")
             time.sleep(2)
 
-    raise RuntimeError(f"[TECH] Gemini failed to generate a valid tech image after {max_retries} attempts.")
+    raise RuntimeError(f"[TECH] Gemini Imagen failed to generate a valid tech image after {max_retries} attempts.")
+    
 # -------------------------------
 # Core: Create Video with Text (Gemini-only image source)
 # -------------------------------
