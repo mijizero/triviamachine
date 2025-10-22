@@ -908,51 +908,47 @@ def build_kpop_gemini_prompt(fact_text: str) -> str:
             "stylish and vivid K-pop or K-drama aesthetic lighting"
         )
 
-import google.generativeai as genai
-import base64
+from vertexai.preview import generative_models
+import vertexai
 import os
-from io import BytesIO
 from PIL import Image
+from io import BytesIO
 
-def generate_gemini_image(prompt: str, tmpdir: str, retries: int = 3) -> str:
+def generate_gemini_image(prompt: str, tmpdir: str, retries: int = 5) -> str:
     """
-    Generate an image using Gemini (Imagen) given a text prompt.
-    Saves the image as JPG in the provided tmpdir and returns the path.
+    Generate an image using Vertex AI Gemini (same as tech) given a text prompt.
+    Saves the image as PNG in tmpdir and returns the path.
     """
-    model_name = "imagen-3.0"  # or 'gemini-1.5-flash' when text + image multimodal used
-    output_path = os.path.join(tmpdir, "gemini_generated.jpg")
+    vertexai.init(project="trivia-machine-472207", location="us-central1")
+    model = generative_models.GenerativeModel("gemini-2.5-flash")
+    output_path = os.path.join(tmpdir, "gemini_generated.png")
 
-    print(f"[KK] 🧠 Imagen (Gemini) generating image for prompt: {prompt}")
+    print(f"[KK] 🧠 Gemini generating image for prompt: {prompt}")
 
     for attempt in range(1, retries + 1):
         try:
-            model = genai.GenerativeModel(model_name)
-            result = model.generate_content(
+            response = model.generate_content(
                 prompt,
-                generation_config={"response_mime_type": "image/jpeg"},
+                generation_config={"response_mime_type": "image/png"}
             )
-
-            # Some Gemini API responses use `result.image` or `result.candidates[0].content.parts`
             image_data = None
 
-            # Try common result structures
-            if hasattr(result, "image") and result.image:
-                image_data = result.image
-            elif hasattr(result, "candidates") and result.candidates:
-                for c in result.candidates:
-                    if hasattr(c, "content") and hasattr(c.content, "parts"):
-                        for part in c.content.parts:
-                            if part.mime_type.startswith("image/"):
-                                image_data = part.data
-                                break
+            # extract image bytes from response
+            if hasattr(response, "candidates") and response.candidates:
+                for cand in response.candidates:
+                    for part in getattr(cand.content, "parts", []):
+                        if getattr(part, "type", "") == "image":
+                            image_data = part.data
+                            break
+                    if image_data:
+                        break
 
             if not image_data:
-                raise ValueError("No image data found in Gemini response.")
+                raise ValueError("No image data returned from Gemini.")
 
-            # Convert base64 → image file
-            image_bytes = base64.b64decode(image_data)
-            img = Image.open(BytesIO(image_bytes)).convert("RGB")
-            img.save(output_path, "JPEG")
+            # save image
+            img = Image.open(BytesIO(image_data)).convert("RGB")
+            img.save(output_path, "PNG")
 
             print(f"[KK] ✅ Gemini image generated successfully → {output_path}")
             return output_path
@@ -969,7 +965,6 @@ def generate_gemini_image(prompt: str, tmpdir: str, retries: int = 3) -> str:
 def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-output/output.mp4"):
     with tempfile.TemporaryDirectory() as tmpdir:
         fact_text = fact_text.replace("*", "").strip()
-
         bg_path = os.path.join(tmpdir, "background.jpg")
         valid_image = False
 
@@ -980,29 +975,30 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
                 valid_image = True
 
             elif ytdest.lower() == "kk":
-                print(f"[{ytdest.upper()}] 🧠 Fetching image using DuckDuckGo or Google Custom Search...")
+                print(f"[{ytdest.upper()}] 🧠 Fetching free/unlicensed image...")
                 img_url = fetch_valid_image_with_gemini(fact_text, max_retries=30)
                 if img_url:
-                    resp = requests.get(img_url, stream=True, timeout=20)
-                    if resp.status_code == 200 and "image" in resp.headers.get("Content-Type", "").lower():
-                        with open(bg_path, "wb") as f:
-                            for chunk in resp.iter_content(8192):
-                                if chunk:
-                                    f.write(chunk)
-                        valid_image = True
-                        print(f"[{ytdest.upper()}] ✅ Image downloaded: {img_url}")
-                    else:
-                        print(f"[{ytdest.upper()}] ⚠️ Final GET failed: status={resp.status_code}")
-                        resp.close()
+                    try:
+                        resp = requests.get(img_url, stream=True, timeout=20)
+                        if resp.status_code == 200 and "image" in resp.headers.get("Content-Type", "").lower():
+                            with open(bg_path, "wb") as f:
+                                for chunk in resp.iter_content(8192):
+                                    if chunk:
+                                        f.write(chunk)
+                            valid_image = True
+                            print(f"[{ytdest.upper()}] ✅ Image downloaded: {img_url}")
+                        else:
+                            print(f"[{ytdest.upper()}] ⚠️ Final GET failed: status={resp.status_code}")
+                            resp.close()
+                    except Exception as e:
+                        print(f"[{ytdest.upper()}] ⚠️ GET request failed: {e}")
 
-                # Fallback to Gemini image generation if failed or invalid
+                # fallback to Gemini if free/unlicensed fetch fails
                 if not valid_image:
-                    print(f"[{ytdest.upper()}] 🤖 Falling back to Gemini image generation...")
+                    print(f"[{ytdest.upper()}] ⚠️ Falling back to Gemini generation...")
                     prompt = build_kpop_gemini_prompt(fact_text)
                     bg_path = generate_gemini_image(prompt, tmpdir)
                     valid_image = True
-                    print(f"[{ytdest.upper()}] ✅ Gemini generated fallback image using prompt:")
-                    print(f"   📝 {prompt}")
 
             if not valid_image:
                 raise RuntimeError(f"{ytdest.upper()} failed to produce a valid background image.")
