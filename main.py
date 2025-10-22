@@ -832,22 +832,34 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
 
             elif ytdest.lower() == "kk":
                 print(f"[{ytdest.upper()}] 🧠 Fetching free/unlicensed image...")
-                img_url = fetch_valid_image_with_gemini(fact_text, max_retries=30)
-                if img_url:
-                    try:
-                        resp = requests.get(img_url, stream=True, timeout=20)
-                        if resp.status_code == 200 and "image" in resp.headers.get("Content-Type", "").lower():
-                            with open(bg_path, "wb") as f:
-                                for chunk in resp.iter_content(8192):
-                                    if chunk:
-                                        f.write(chunk)
-                            valid_image = True
-                            print(f"[{ytdest.upper()}] ✅ Image downloaded: {img_url}")
-                        else:
-                            print(f"[{ytdest.upper()}] ⚠️ Final GET failed: status={resp.status_code}")
-                            resp.close()
-                    except Exception as e:
-                        print(f"[{ytdest.upper()}] ⚠️ GET request failed: {e}")
+            
+                # 1️⃣ Generate concise search query using Gemini
+                search_query = extract_search_query(fact_text)
+                print(f"[{ytdest.upper()}] 🔎 Search query for free image: {search_query}")
+            
+                img_url = None
+            
+                # 2️⃣ Try DuckDuckGo first
+                try:
+                    from duckduckgo_search import DDGS
+                    with DDGS() as ddgs:
+                        results = list(ddgs.images(search_query, max_results=1))
+                    if results:
+                        img_url = results[0].get("image")
+                        if img_url:
+                            resp = requests.get(img_url, stream=True, timeout=20)
+                            if resp.status_code == 200 and "image" in resp.headers.get("Content-Type", "").lower():
+                                with open(bg_path, "wb") as f:
+                                    for chunk in resp.iter_content(8192):
+                                        if chunk:
+                                            f.write(chunk)
+                                valid_image = True
+                                print(f"[{ytdest.upper()}] ✅ DuckDuckGo image downloaded: {img_url}")
+                            else:
+                                print(f"[{ytdest.upper()}] ⚠️ DuckDuckGo GET failed: status={resp.status_code}")
+                                resp.close()
+                except Exception as e:
+                    print(f"[{ytdest.upper()}] ⚠️ DuckDuckGo search failed: {e}")
 
                 # fallback to Gemini if free/unlicensed fetch fails
                 if not valid_image:
