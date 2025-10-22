@@ -789,7 +789,180 @@ def generate_gemini_tech_image(fact_text, tmpdir, max_retries=5):
             time.sleep(2)
 
     raise RuntimeError(f"[TECH] Gemini Imagen failed to generate a valid tech image after {max_retries} attempts.")
-    
+
+def build_kpop_gemini_prompt(fact_text: str) -> str:
+    """
+    Builds an adaptive prompt for Gemini/Imagen image generation based on the
+    content of the fact_text — handling K-pop groups, solo idols, Korean actors/actresses,
+    and automatically choosing between drama scene vs press photo for actors/actresses.
+    """
+    lower = fact_text.lower()
+
+    female_groups = [
+        "blackpink", "newjeans", "ive", "aespa", "itzy", "twice",
+        "red velvet", "g-idle", "mamamoo", "stayc", "kep1er", "le sserafim",
+        "nmixx", "fromis_9", "oh my girl", "woo!ah!", "purple kiss"
+    ]
+
+    male_groups = [
+        "bts", "exo", "seventeen", "nct", "stray kids", "txt", "enhypen",
+        "ateez", "treasure", "monsta x", "super junior", "shinee", "astro",
+        "the boyz", "sf9", "ikon", "pentagon", "winner"
+    ]
+
+    female_idols = [
+        "jennie", "lisa", "jisoo", "rose", "sana", "mina", "nayeon",
+        "momo", "jihyo", "dahyun", "chaeyoung", "tzuyu", "karina", "winter",
+        "giselle", "ningning", "yuna", "yeji", "ryujin", "lia", "chaeryeong",
+        "wendy", "joy", "seulgi", "irene", "yeri", "soyeon", "miyeon", "minnie",
+        "yuqi", "shuhua", "hwasa", "solar", "moonbyul", "wheein", "sulhyun",
+        "hani", "hyuna", "sunmi", "iu", "taeyeon", "chungha", "cl", "boa"
+    ]
+
+    male_idols = [
+        "jungkook", "v ", "taehyung", "jin", "rm", "suga", "j-hope",
+        "jimin", "kai", "baekhyun", "chanyeol", "mark", "jeno", "taeyong",
+        "ten", "johnny", "jaehyun", "taemin", "minho", "key", "hyunjin",
+        "felix", "han", "changbin", "bang chan", "soobin", "yeonjun",
+        "beomgyu", "jay", "heeseung", "sunghoon", "ni-ki"
+    ]
+
+    actors = [
+        "lee min-ho", "hyun bin", "park seo-joon", "song joong-ki", "gong yoo",
+        "lee byung-hun", "jo in-sung", "park bo-gum", "nam joo-hyuk", "ahn hyo-seop",
+        "cha eun-woo", "kim soo-hyun", "lee dong-wook", "ji chang-wook",
+        "kim woo-bin", "ryu jun-yeol", "kang ha-neul", "park hyung-sik", "im si-wan",
+        "lee seung-gi", "kim bum", "yoo seung-ho"
+    ]
+
+    actresses = [
+        "song hye-kyo", "jun ji-hyun", "kim tae-ri", "bae suzy", "shin min-a",
+        "han hyo-joo", "park min-young", "kim go-eun", "lee sung-kyung",
+        "kim ji-won", "seo ye-ji", "park shin-hye", "lee da-hee",
+        "hwang jung-eum", "kim hye-soo", "yoona", "jang nara", "kim hee-sun",
+        "kim yoo-jung", "go ara", "iu", "seolhyun"
+    ]
+
+    # Choose style variant for actors/actresses
+    # e.g., if fact_text contains keywords like “drama”, “scene”, “episode”, “on-set”, use drama style,
+    # else use press headshot style
+    def actor_prompt_style(name: str, is_actor: bool):
+        style = ""
+        if "drama" in lower or "scene" in lower or "episode" in lower:
+            if is_actor:
+                style = (
+                    "a Korean male actor in a dramatic TV-drama scene, cinematic lighting, "
+                    "moody atmosphere, expressive face"
+                )
+            else:
+                style = (
+                    "a Korean actress in a dramatic K-drama scene, emotional lighting, "
+                    "style reminiscent of a film poster"
+                )
+        else:
+            if is_actor:
+                style = (
+                    "a Korean male actor in a professional studio portrait, sleek suit, "
+                    "high-fashion look, minimal background"
+                )
+            else:
+                style = (
+                    "a Korean actress in a soft-lighting studio portrait, elegant dress, "
+                    "magazine cover style"
+                )
+        return style
+
+    if any(g in lower for g in female_groups):
+        return (
+            "a group of 4-5 Korean female pop idols performing on stage with pink and neon lights, "
+            "K-pop concert atmosphere, cinematic lighting, vibrant audience glow"
+        )
+
+    elif any(g in lower for g in male_groups):
+        return (
+            "a group of Korean male pop idols performing in concert lighting, energetic stage scene, "
+            "blue and red back-lights, intense choreography moment"
+        )
+
+    elif any(n in lower for n in female_idols):
+        return (
+            "a Korean female pop idol performing on stage in elegant fashion lighting, "
+            "cinematic close-up, modern concert background, soft glow aesthetic"
+        )
+
+    elif any(n in lower for n in male_idols):
+        return (
+            "a Korean male pop idol in stylish concert stage lighting, confident pose, "
+            "spotlight from above, dramatic concert colour palette"
+        )
+
+    elif any(a in lower for a in actors):
+        return actor_prompt_style(a, is_actor=True)
+
+    elif any(a in lower for a in actresses):
+        return actor_prompt_style(a, is_actor=False)
+
+    else:
+        return (
+            "a cinematic portrait of a Korean pop idol or actor performing live, "
+            "stylish and vivid K-pop or K-drama aesthetic lighting"
+        )
+
+import google.generativeai as genai
+import base64
+import os
+from io import BytesIO
+from PIL import Image
+
+def generate_gemini_image(prompt: str, tmpdir: str, retries: int = 3) -> str:
+    """
+    Generate an image using Gemini (Imagen) given a text prompt.
+    Saves the image as JPG in the provided tmpdir and returns the path.
+    """
+    model_name = "imagen-3.0"  # or 'gemini-1.5-flash' when text + image multimodal used
+    output_path = os.path.join(tmpdir, "gemini_generated.jpg")
+
+    print(f"[KK] 🧠 Imagen (Gemini) generating image for prompt: {prompt}")
+
+    for attempt in range(1, retries + 1):
+        try:
+            model = genai.GenerativeModel(model_name)
+            result = model.generate_content(
+                prompt,
+                generation_config={"response_mime_type": "image/jpeg"},
+            )
+
+            # Some Gemini API responses use `result.image` or `result.candidates[0].content.parts`
+            image_data = None
+
+            # Try common result structures
+            if hasattr(result, "image") and result.image:
+                image_data = result.image
+            elif hasattr(result, "candidates") and result.candidates:
+                for c in result.candidates:
+                    if hasattr(c, "content") and hasattr(c.content, "parts"):
+                        for part in c.content.parts:
+                            if part.mime_type.startswith("image/"):
+                                image_data = part.data
+                                break
+
+            if not image_data:
+                raise ValueError("No image data found in Gemini response.")
+
+            # Convert base64 → image file
+            image_bytes = base64.b64decode(image_data)
+            img = Image.open(BytesIO(image_bytes)).convert("RGB")
+            img.save(output_path, "JPEG")
+
+            print(f"[KK] ✅ Gemini image generated successfully → {output_path}")
+            return output_path
+
+        except Exception as e:
+            print(f"[KK] ⚠️ Gemini attempt {attempt} failed: {e}")
+            if attempt == retries:
+                raise RuntimeError(f"[KK] Gemini failed after {retries} attempts.")
+            continue
+            
 # -------------------------------
 # Core: Create Video with Text (Gemini-only image source)
 # -------------------------------
@@ -821,6 +994,15 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
                     else:
                         print(f"[{ytdest.upper()}] ⚠️ Final GET failed: status={resp.status_code}")
                         resp.close()
+
+                # Fallback to Gemini image generation if failed or invalid
+                if not valid_image:
+                    print(f"[{ytdest.upper()}] 🤖 Falling back to Gemini image generation...")
+                    prompt = build_kpop_gemini_prompt(fact_text)
+                    bg_path = generate_gemini_image(prompt, tmpdir)
+                    valid_image = True
+                    print(f"[{ytdest.upper()}] ✅ Gemini generated fallback image using prompt:")
+                    print(f"   📝 {prompt}")
 
             if not valid_image:
                 raise RuntimeError(f"{ytdest.upper()} failed to produce a valid background image.")
