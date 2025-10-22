@@ -13,10 +13,19 @@ from vertexai.generative_models import GenerativeModel
 from aeneas.executetask import ExecuteTask
 from aeneas.task import Task
 
+from vertexai.preview import generative_models
+import re
+import time
+from vertexai.preview.vision_models import ImageGenerationModel
+
+import hashlib
+from difflib import SequenceMatcher
+
 # YouTube API
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
+from google.cloud import firestore
 
 app = Flask(__name__)
 
@@ -32,11 +41,6 @@ from google.cloud import firestore
 
 # Force Firestore client to use correct project
 firestore_client = firestore.Client(project="trivia-machine-472207", database="(default)")
-
-import re
-import hashlib
-from difflib import SequenceMatcher
-from google.cloud import firestore
 
 db = firestore_client
 FACTS_COLLECTION = "facts_history"
@@ -545,154 +549,6 @@ from difflib import SequenceMatcher
 def is_similar(a, b, threshold=0.8):
     """Returns True if two strings are semantically similar."""
     return SequenceMatcher(None, a.lower(), b.lower()).ratio() > threshold
-
-# -------------------------------
-# Gemini-only Image Fetch
-# -------------------------------
-def fetch_valid_image_with_gemini(fact_text, max_retries=30, timeout_head=10):
-    """
-    Uses Gemini as the sole image fetcher.
-    Keeps retrying until Gemini returns a valid direct image URL or max_retries reached.
-
-    Validation performed by runtime:
-      - URL starts with http/https
-      - URL ends with .jpg/.jpeg/.png/.webp (case-insensitive)
-      - HEAD request returns 200 and Content-Type contains "image"
-      - If HEAD returns 405 or 501 (some servers disallow HEAD), try a lightweight GET with stream=True and read minimal bytes.
-
-    Returns the validated image URL string, or None if not found.
-    """
-    model = GenerativeModel("gemini-2.5-flash")
-
-    # Trusted domain hint — Gemini should prefer these but it's not enforced by runtime
-    trusted_domains_hint = (
-        "Prefer images hosted on reliable public domains such as "
-        "wikimedia.org, commons.wikimedia.org, unsplash.com, pexels.com, images.unsplash.com, "
-        "or reputable news / official sources."
-    )
-
-    base_prompt = f"""
-You are a visual retrieval agent for an automated trivia video system.
-Given the fact below, return ONLY ONE direct image URL (no markdown, no commentary).
-Requirements:
-- The URL must be a direct image link that ends with .jpg, .jpeg, .png, or .webp.
-- Prefer vertical/portrait images when available.
-- Prefer images from publicly accessible, reliable domains (google images, twitter/X, pinterest, official press photos, reputable news sites).
-- Do NOT return short links (bit.ly, t.co). Return the full URL.
-- Do NOT include any other text, explanation, or punctuation — only the single URL on one line.
-
-{trusted_domains_hint}
-
-Fact:
-{fact_text}
-    """.strip()
-
-    for attempt in range(1, max_retries + 1):
-        try:
-            # Ask Gemini for a direct image URL
-            response = model.generate_content(base_prompt)
-
-            # Extract text if present
-            candidate = None
-            if response and getattr(response, "text", None):
-                candidate = response.text.strip()
-            else:
-                # Some response shapes may have candidates; try to extract text parts robustly
-                try:
-                    # attempt to read candidates if available
-                    for cand in getattr(response, "candidates", []) or []:
-                        for part in getattr(cand, "content", {}).get("parts", []) or []:
-                            text_part = getattr(part, "text", None)
-                            if text_part:
-                                candidate = text_part.strip()
-                                break
-                        if candidate:
-                            break
-                except Exception:
-                    candidate = None
-
-            if not candidate:
-                print(f"⚠️ [Gemini attempt {attempt}] Empty response — retrying...")
-                continue
-
-            # Take only the first line (some responses may include extra newlines)
-            candidate = candidate.splitlines()[0].strip()
-
-            # Quick pattern check
-            if not re.match(r"^https?://", candidate, re.IGNORECASE):
-                print(f"⚠️ [Gemini attempt {attempt}] Not an http/https URL: {candidate!r}")
-                continue
-            if not re.search(r"\.(jpg|jpeg|png|webp)(?:\?.*)?$", candidate, re.IGNORECASE):
-                print(f"⚠️ [Gemini attempt {attempt}] URL does not end with an image extension: {candidate!r}")
-                continue
-
-            # Perform HTTP HEAD to validate content-type and status
-            try:
-                head = requests.head(candidate, allow_redirects=True, timeout=timeout_head)
-            except requests.RequestException as e:
-                # Some servers don't support HEAD; we'll try a small GET as fallback check below
-                head = None
-                head_err = e
-
-            if head is not None:
-                status = getattr(head, "status_code", None)
-                ctype = head.headers.get("Content-Type", "") if head.headers else ""
-                if status == 200 and ctype and "image" in ctype.lower():
-                    print(f"✅ [Gemini attempt {attempt}] Valid image URL confirmed via HEAD: {candidate}")
-                    return candidate
-                # If HEAD returned 200 but content-type missing, we may still try GET below
-                if status is not None and status >= 400:
-                    print(f"⚠️ [Gemini attempt {attempt}] HEAD returned status {status} for {candidate!r}")
-                else:
-                    print(f"⚠️ [Gemini attempt {attempt}] HEAD content-type: {ctype!r} for {candidate!r}")
-
-            # If HEAD not usable or inconclusive, try lightweight GET
-            try:
-                get_resp = requests.get(candidate, stream=True, allow_redirects=True, timeout=timeout_head)
-                status = getattr(get_resp, "status_code", None)
-                ctype = get_resp.headers.get("Content-Type", "") if get_resp.headers else ""
-                if status == 200 and ctype and "image" in ctype.lower():
-                    # read a small chunk to be sure (and then close)
-                    try:
-                        next(get_resp.iter_content(1024))
-                    except StopIteration:
-                        # no content
-                        print(f"⚠️ [Gemini attempt {attempt}] GET returned empty body for {candidate!r}")
-                        get_resp.close()
-                        continue
-                    get_resp.close()
-                    print(f"✅ [Gemini attempt {attempt}] Valid image URL confirmed via GET: {candidate}")
-                    return candidate
-                else:
-                    print(f"⚠️ [Gemini attempt {attempt}] GET status {status}, content-type {ctype!r} for {candidate!r}")
-                    try:
-                        get_resp.close()
-                    except Exception:
-                        pass
-            except requests.RequestException as e_get:
-                # network/connectivity error for this candidate
-                print(f"⚠️ [Gemini attempt {attempt}] GET request failed: {e_get}")
-
-            # If we reach here, candidate failed validation
-            print(f"⚠️ [Gemini attempt {attempt}] Candidate failed validation: {candidate!r}")
-            # continue to next attempt
-
-        except Exception as e:
-            print(f"⚠️ [Gemini attempt {attempt}] Exception while asking Gemini: {e}")
-
-    # exhausted attempts
-    print(f"❌ Gemini failed to produce a valid image after {max_retries} attempts.")
-    return None
-
-
-from vertexai.preview import generative_models
-import vertexai
-import requests
-import tempfile
-import os
-import re
-import time
-from vertexai.preview.vision_models import ImageGenerationModel
 
 # --- Helper: Categorize tech topic ---
 def detect_tech_category(fact_text: str) -> str:
