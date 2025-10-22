@@ -830,7 +830,6 @@ def create_trivia_video(fact_text, ytdest, output_gcs_path="gs://trivia-videos-o
             raise
 
         print(f"[{ytdest.upper()}] 🖼️ Background image ready → {bg_path}")
-        return bg_path
 
         # --- Resize/crop to 1080x1920 ---
         target_size = (1080, 1920)
