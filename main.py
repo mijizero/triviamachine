@@ -221,10 +221,11 @@ def get_dynamic_fact():
 
             if source == 1:
                 prompt = (
-                    "Give one factual and engaging piece of technology trivia in 3 sentences. "
-                    "Sentence 1 must start with 'Did you know'. "
+                    "Generate a new interesting fact that naturally fits within the theme of technology and innovation. "
+                    "Overall 3 sentences. Sentence 1 must start with 'Did you know'. "
                     "Sentences 2 and 3 should add interesting details or background."
-                    "Do not repeat any of the main ideas in the json file at " + json_firestore
+                    "Do not focus narrowly on definitions or lists; instead, vary concepts, examples, and perspectives. "
+                    "Avoid repeating any main ideas found in the JSON file at " + json_firestore
                 )
                 fact = gemini_fact(prompt)
                 if fact:
@@ -232,10 +233,11 @@ def get_dynamic_fact():
 
             elif source == 2:
                 prompt = (
-                    "Give one short, factual explanation on how some piece of technology or everyday product works in 3 sentences. "
-                    "The first must start with 'Did you know'. "
-                    "The next 2 sentences should give interesting supporting info or context."
-                    "Do not repeat any of the main ideas in the json file at " + json_firestore
+                    "Generate a new interesting fact that naturally fits within the theme of how tech gadgets or everyday products work. "
+                    "Overall 3 sentences. Sentence 1 must start with 'Did you know'. "
+                    "Sentences 2 and 3 should add interesting details or background."
+                    "Do not focus narrowly on definitions or lists; instead, vary concepts, examples, and perspectives. "
+                    "Avoid repeating any main ideas found in the JSON file at " + json_firestore
                 )
                 fact = gemini_fact(prompt)
                 if fact:
@@ -802,6 +804,7 @@ def generate_gemini_image(prompt: str, tmpdir: str, retries: int = 5) -> str:
     """
     Generate an image using Vertex AI Gemini (same as tech) given a text prompt.
     Saves the image as PNG in tmpdir and returns the path.
+    Auto-handles both PNG and JPEG responses.
     """
     vertexai.init(project="trivia-machine-472207", location="us-central1")
     model = generative_models.GenerativeModel("gemini-2.5-flash")
@@ -811,17 +814,22 @@ def generate_gemini_image(prompt: str, tmpdir: str, retries: int = 5) -> str:
 
     for attempt in range(1, retries + 1):
         try:
+            # Ask for PNG by default, but we’ll handle JPEG too
             response = model.generate_content(
                 prompt,
                 generation_config={"response_mime_type": "image/png"}
             )
-            image_data = None
 
-            # extract image bytes from response
+            image_data = None
+            mime_type = None
+
+            # Extract image bytes from candidates
             if hasattr(response, "candidates") and response.candidates:
                 for cand in response.candidates:
                     for part in getattr(cand.content, "parts", []):
-                        if getattr(part, "type", "") == "image":
+                        # Gemini sometimes omits "type" but has mime_type
+                        if hasattr(part, "mime_type") and "image" in part.mime_type:
+                            mime_type = part.mime_type
                             image_data = part.data
                             break
                     if image_data:
@@ -830,11 +838,19 @@ def generate_gemini_image(prompt: str, tmpdir: str, retries: int = 5) -> str:
             if not image_data:
                 raise ValueError("No image data returned from Gemini.")
 
-            # save image
-            img = Image.open(BytesIO(image_data)).convert("RGB")
+            # Handle both base64 or raw bytes
+            try:
+                # Some Vertex SDKs return base64-encoded bytes
+                image_bytes = base64.b64decode(image_data)
+            except Exception:
+                # If already bytes
+                image_bytes = image_data
+
+            # Open and convert image → PNG
+            img = Image.open(BytesIO(image_bytes)).convert("RGB")
             img.save(output_path, "PNG")
 
-            print(f"[KK] ✅ Gemini image generated successfully → {output_path}")
+            print(f"[KK] ✅ Gemini image generated successfully ({mime_type}) → {output_path}")
             return output_path
 
         except Exception as e:
