@@ -800,64 +800,46 @@ import os
 from PIL import Image
 from io import BytesIO
 
+from vertexai.preview.vision_models import ImageGenerationModel
+import vertexai
+import os, time
+
 def generate_gemini_image(prompt: str, tmpdir: str, retries: int = 5) -> str:
     """
-    Generate an image using Vertex AI Gemini (same as tech) given a text prompt.
-    Saves the image as PNG in tmpdir and returns the path.
-    Auto-handles both PNG and JPEG responses.
+    Generate a K-pop/K-drama themed image using Google's Imagen model via Vertex AI.
+    Uses the same backend as the tech image generator but custom prompt styling.
     """
     vertexai.init(project="trivia-machine-472207", location="us-central1")
-    model = generative_models.GenerativeModel("gemini-2.5-flash")
-    output_path = os.path.join(tmpdir, "gemini_generated.png")
+    model = ImageGenerationModel.from_pretrained("imagen-3.0-generate-002")
 
-    print(f"[KK] 🧠 Gemini generating image for prompt: {prompt}")
+    output_path = os.path.join(tmpdir, "gemini_generated.png")
+    print(f"[KK] 🧠 Imagen generating image for prompt: {prompt}")
 
     for attempt in range(1, retries + 1):
         try:
-            # Ask for PNG by default, but we’ll handle JPEG too
-            response = model.generate_content(
-                prompt,
-                generation_config={"response_mime_type": "image/png"}
+            response = model.generate_images(
+                prompt=prompt,
+                number_of_images=1,
+                aspect_ratio="16:9"
             )
 
-            image_data = None
-            mime_type = None
+            if response and hasattr(response, "images") and response.images:
+                image_bytes = response.images[0]._image_bytes
+                with open(output_path, "wb") as f:
+                    f.write(image_bytes)
 
-            # Extract image bytes from candidates
-            if hasattr(response, "candidates") and response.candidates:
-                for cand in response.candidates:
-                    for part in getattr(cand.content, "parts", []):
-                        # Gemini sometimes omits "type" but has mime_type
-                        if hasattr(part, "mime_type") and "image" in part.mime_type:
-                            mime_type = part.mime_type
-                            image_data = part.data
-                            break
-                    if image_data:
-                        break
+                print(f"[KK] ✅ Imagen generated K-pop image → {output_path}")
+                return output_path
 
-            if not image_data:
-                raise ValueError("No image data returned from Gemini.")
-
-            # Handle both base64 or raw bytes
-            try:
-                # Some Vertex SDKs return base64-encoded bytes
-                image_bytes = base64.b64decode(image_data)
-            except Exception:
-                # If already bytes
-                image_bytes = image_data
-
-            # Open and convert image → PNG
-            img = Image.open(BytesIO(image_bytes)).convert("RGB")
-            img.save(output_path, "PNG")
-
-            print(f"[KK] ✅ Gemini image generated successfully ({mime_type}) → {output_path}")
-            return output_path
+            else:
+                print(f"[KK] ⚠️ Imagen returned no image on attempt {attempt}")
 
         except Exception as e:
-            print(f"[KK] ⚠️ Gemini attempt {attempt} failed: {e}")
-            if attempt == retries:
-                raise RuntimeError(f"[KK] Gemini failed after {retries} attempts.")
-            continue
+            print(f"[KK] ⚠️ Imagen attempt {attempt} failed: {e}")
+            if attempt < retries:
+                time.sleep(2)
+                continue
+            raise RuntimeError(f"[KK] Imagen failed after {retries} attempts.")
             
 # -------------------------------
 # Core: Create Video with Text (Gemini-only image source)
